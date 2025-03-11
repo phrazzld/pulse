@@ -1,36 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Pulse - GitHub Commit Summary
+
+Pulse is a web application that generates summaries of GitHub commits for individuals and teams. Built with Next.js and TypeScript, Pulse provides easy visualization of coding activity across repositories.
+
+## Features
+
+- **Individual Summaries**: Track your own GitHub activity across all accessible repositories
+- **Team Summaries**: Aggregate commit data for multiple team members
+- **Repository Selection**: Choose specific repositories or include all accessible repos
+- **Configurable Time Frames**: Set custom date ranges for your summary
+- **AI-Powered Analysis**: Gemini AI generates insights from your commit history
+- **No Local Storage**: All data is fetched on-demand from GitHub, ensuring data privacy
+- **Comprehensive Logging**: Detailed logging for debugging and monitoring
+
+## Tech Stack
+
+- **Framework**: Next.js (v15+) with TypeScript
+- **Authentication**: next-auth with GitHub OAuth
+- **GitHub API Client**: octokit for interacting with the GitHub API
+- **AI Analysis**: Google's Gemini AI for commit analysis
+- **Styling**: TailwindCSS for responsive design
+- **Logging**: Custom logging system with rotation
+- **Deployment**: Vercel (recommended)
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
 
+- Node.js 18.17 or later
+- A GitHub account
+- GitHub OAuth application credentials
+
+### Setup GitHub OAuth
+
+1. Go to your GitHub account settings
+2. Navigate to "Developer settings" > "OAuth Apps" > "New OAuth App"
+3. Register a new application with the following settings:
+   - Application name: Pulse (or your preferred name)
+   - Homepage URL: `http://localhost:3000`
+   - Authorization callback URL: `http://localhost:3000/api/auth/callback/github`
+4. After registration, note your Client ID and generate a Client Secret
+
+### Installation
+
+1. Clone the repository:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/yourusername/pulse.git
+cd pulse
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Install dependencies:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Create a `.env.local` file in the project root (use `.env.local.example` as a template):
+```
+# GitHub OAuth
+GITHUB_OAUTH_CLIENT_ID=your_github_client_id
+GITHUB_OAUTH_CLIENT_SECRET=your_github_client_secret
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# NextAuth.js
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=your_nextauth_secret_key_here
 
-## Learn More
+# Gemini API
+GEMINI_API_KEY=your_gemini_api_key
+```
 
-To learn more about Next.js, take a look at the following resources:
+4. Run the development server:
+```bash
+# Standard development server
+npm run dev
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Development with debug logging to file
+npm run dev:log
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+5. Open [http://localhost:3000](http://localhost:3000) in your browser
 
-## Deploy on Vercel
+## Usage
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Sign in with your GitHub account
+2. Select whether you want an individual or team summary
+3. For team summaries, enter comma-separated GitHub usernames
+4. Select a date range for your summary
+5. Optionally select specific repositories
+6. Click "Generate Summary" to view your commit statistics
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deployment
+
+The easiest way to deploy Pulse is using Vercel:
+
+1. Push your code to a GitHub repository
+2. Import your repository on [Vercel](https://vercel.com/new)
+3. Set the environment variables in the Vercel project settings
+4. Deploy the application
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
