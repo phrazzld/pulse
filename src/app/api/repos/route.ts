@@ -1,0 +1,61 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "../auth/[...nextauth]/route";
+import { fetchAllRepositories } from "@/lib/github";
+import { logger } from "@/lib/logger";
+
+const MODULE_NAME = "api:repos";
+
+export async function GET(request: NextRequest) {
+  logger.debug(MODULE_NAME, "GET /api/repos request received", { 
+    url: request.url,
+    headers: Object.fromEntries(request.headers)
+  });
+  
+  const session = await getServerSession(authOptions);
+  
+  if (!session || !session.accessToken) {
+    logger.warn(MODULE_NAME, "Unauthorized request - no valid session", { 
+      sessionExists: !!session,
+      hasAccessToken: !!session?.accessToken
+    });
+    
+    return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
+  
+  logger.info(MODULE_NAME, "Authenticated user requesting repositories", { 
+    user: session.user?.email || session.user?.name || 'unknown'
+  });
+
+  try {
+    logger.debug(MODULE_NAME, "Fetching all user repositories");
+    const startTime = Date.now();
+    
+    // Get all repositories the user has access to (owned, org, and collaborative)
+    const repositories = await fetchAllRepositories(session.accessToken);
+    
+    const endTime = Date.now();
+    logger.info(MODULE_NAME, "Successfully fetched repositories", { 
+      count: repositories.length,
+      timeMs: endTime - startTime,
+      languages: Array.from(new Set(repositories.map(repo => repo.language).filter(Boolean))),
+      private: repositories.filter(repo => repo.private).length,
+      public: repositories.filter(repo => !repo.private).length
+    });
+
+    return NextResponse.json(repositories);
+  } catch (error) {
+    logger.error(MODULE_NAME, "Error fetching repositories", { error });
+    return new NextResponse(JSON.stringify({ error: "Failed to fetch repositories" }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
+}
