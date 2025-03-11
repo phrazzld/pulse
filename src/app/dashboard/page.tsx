@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useSession } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 
@@ -71,6 +71,12 @@ export default function Dashboard() {
       fetchRepositories();
     }
   }, [session]);
+  
+  // Handle repository fetch errors - set descriptive error message
+  const handleAuthError = () => {
+    console.log('GitHub access token appears to be invalid or expired.');
+    setError('GitHub authentication failed. Your access token is invalid or expired. Please sign out and sign in again.');
+  };
 
   // Helper functions for date formatting
   function getTodayDate() {
@@ -88,11 +94,26 @@ export default function Dashboard() {
     try {
       setLoading(true);
       const response = await fetch('/api/repos');
+      
       if (!response.ok) {
-        throw new Error('Failed to fetch repositories');
+        // Parse the error response
+        const errorData = await response.json();
+        
+        if (response.status === 401 || 
+            response.status === 403 ||
+            (errorData.code === 'GITHUB_AUTH_ERROR') ||
+            (errorData.error && errorData.error.includes('authentication'))) {
+          // Auth error - token expired or invalid
+          handleAuthError();
+          return;
+        }
+        
+        throw new Error(errorData.error || 'Failed to fetch repositories');
       }
+      
       const data = await response.json();
       setRepositories(data);
+      setError(null); // Clear any previous errors
     } catch (error) {
       console.error('Error fetching repositories:', error);
       setError('Failed to fetch repositories. Please try again.');
@@ -171,6 +192,12 @@ export default function Dashboard() {
                 height={32}
                 className="rounded-full"
               />
+              <button
+                onClick={() => signOut({ callbackUrl: '/' })}
+                className="ml-4 px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600"
+              >
+                Sign Out
+              </button>
             </div>
           )}
         </div>
@@ -184,8 +211,16 @@ export default function Dashboard() {
             </h2>
 
             {error && (
-              <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
-                {error}
+              <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded flex flex-col md:flex-row md:items-center">
+                <div>{error}</div>
+                {error.includes('authentication') && (
+                  <button
+                    className="mt-2 md:mt-0 md:ml-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+                    onClick={() => signOut({ callbackUrl: '/' })}
+                  >
+                    Sign out now
+                  </button>
+                )}
               </div>
             )}
 

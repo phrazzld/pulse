@@ -51,8 +51,27 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(repositories);
   } catch (error) {
     logger.error(MODULE_NAME, "Error fetching repositories", { error });
-    return new NextResponse(JSON.stringify({ error: "Failed to fetch repositories" }), {
-      status: 500,
+    // Check if it's an authentication error
+    const isAuthError = error?.name === 'HttpError' && 
+                       (error?.message?.includes('credentials') || 
+                        error?.message?.includes('authentication'));
+    
+    // GitHub tokens can become invalid for various reasons:
+    // 1. Token was revoked by the user
+    // 2. Token was revoked by an org admin
+    // 3. Token expired (if it had an expiration)
+    // 4. Token scopes changed
+    // 5. User revoked app access
+    
+    return new NextResponse(JSON.stringify({ 
+      error: isAuthError ? 
+        "GitHub authentication failed. Your access token is invalid or expired." : 
+        "Failed to fetch repositories",
+      details: error.message,
+      code: isAuthError ? "GITHUB_AUTH_ERROR" : "API_ERROR"
+    }), {
+      // Use 403 for auth errors rather than 401 to prevent automatic browser redirects
+      status: isAuthError ? 403 : 500,
       headers: {
         "Content-Type": "application/json",
       },
