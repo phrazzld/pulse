@@ -2,34 +2,34 @@
 
 :root {
   /* Cybernetic Command Interface Color Palette */
-  --dark-slate: #1B2B34;
-  --neon-green: #00FF87;
-  --electric-blue: #3B8EEA;
-  --luminous-yellow: #FFC857;
-  --crimson-red: #FF3B30;
-  
+  --dark-slate: #1b2b34;
+  --neon-green: #00ff87;
+  --electric-blue: #3b8eea;
+  --luminous-yellow: #ffc857;
+  --crimson-red: #ff3b30;
+
   /* Default theme variables */
   --background: var(--dark-slate);
   --background-secondary: #121212;
-  --foreground: #FFFFFF;
+  --foreground: #ffffff;
   --accent-primary: var(--neon-green);
   --accent-secondary: var(--electric-blue);
   --warning: var(--luminous-yellow);
   --error: var(--crimson-red);
-  
+
   /* Shadows and effects */
   --box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   --glow-effect: 0 0 10px rgba(0, 255, 135, 0.5);
   --gradient-bg: linear-gradient(180deg, var(--dark-slate) 0%, #121212 100%);
-  
+
   /* Spacing */
   --spacing-sm: 8px;
   --spacing-md: 16px;
   --spacing-lg: 24px;
-  
+
   /* Border radius */
   --border-radius: 6px;
-  
+
   /* Transitions */
   --transition-speed: 200ms;
   --transition-timing: ease-in-out;
@@ -93,7 +93,9 @@ body {
 }
 
 /* Form inputs */
-input, select, textarea {
+input,
+select,
+textarea {
   background-color: var(--dark-slate);
   border: 1px solid var(--neon-green);
   border-radius: var(--border-radius);
@@ -102,7 +104,9 @@ input, select, textarea {
   transition: all var(--transition-speed) var(--transition-timing);
 }
 
-input:focus, select:focus, textarea:focus {
+input:focus,
+select:focus,
+textarea:focus {
   border-color: var(--electric-blue);
   box-shadow: 0 0 0 2px rgba(59, 142, 234, 0.3);
   outline: none;
@@ -123,10 +127,14 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* Headings */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-family: "Roboto Mono", "Courier New", monospace;
   font-weight: bold;
-  margin-bottom: 0.5em;
 }
 
 h1 {
