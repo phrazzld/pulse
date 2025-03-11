@@ -11,6 +11,7 @@ Pulse is a web application that generates summaries of GitHub commits for indivi
 - **AI-Powered Analysis**: Gemini AI generates insights from your commit history
 - **No Local Storage**: All data is fetched on-demand from GitHub, ensuring data privacy
 - **Comprehensive Logging**: Detailed logging for debugging and monitoring
+- **Graceful Error Handling**: Clear user feedback for authentication issues with easy recovery options
 
 ## Tech Stack
 
@@ -44,7 +45,7 @@ Pulse is a web application that generates summaries of GitHub commits for indivi
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/pulse.git
+git clone https://github.com/phrazzld/pulse.git
 cd pulse
 ```
 
@@ -86,6 +87,14 @@ npm run dev:log
 4. Select a date range for your summary
 5. Optionally select specific repositories
 6. Click "Generate Summary" to view your commit statistics
+
+### Troubleshooting Authentication
+
+If you encounter GitHub authentication errors:
+
+1. Click the "Sign Out" button in the dashboard header
+2. Sign back in with your GitHub account to refresh your access token
+3. If problems persist, ensure your GitHub OAuth app still has the necessary permissions
 
 ## Deployment
 
