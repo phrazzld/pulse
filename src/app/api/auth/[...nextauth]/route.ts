@@ -1,15 +1,29 @@
 import NextAuth from "next-auth";
 import GitHubProvider from "next-auth/providers/github";
 import { logger } from "@/lib/logger";
+import { checkAppInstallation } from "@/lib/github";
 
 const MODULE_NAME = "api:auth";
+
+// A helper function to generate consistent callback URL
+function getCallbackUrl() {
+  const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
+  return `${baseUrl}/api/auth/callback/github`;
+}
 
 export const authOptions = {
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_OAUTH_CLIENT_ID as string,
       clientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET as string,
-      scope: "repo",  // Required to access commit histories
+      authorization: {
+        params: {
+          scope: "repo read:user read:org user:email", // Comprehensive scopes for full repository access
+        },
+        url: "https://github.com/login/oauth/authorize",
+      },
+      // Force the provider to use the official callback URL
+      callbackUrl: getCallbackUrl(),
     }),
   ],
   callbacks: {
@@ -29,6 +43,21 @@ export const authOptions = {
         });
         
         token.accessToken = account.access_token;
+        
+        // Check for GitHub App installation when we first get an access token
+        try {
+          if (account.access_token) {
+            const installationId = await checkAppInstallation(account.access_token);
+            if (installationId) {
+              logger.info(MODULE_NAME, "Found GitHub App installation during auth", { installationId });
+              token.installationId = installationId;
+            } else {
+              logger.info(MODULE_NAME, "No GitHub App installation found during auth");
+            }
+          }
+        } catch (error) {
+          logger.warn(MODULE_NAME, "Error checking for GitHub App installation during auth", { error });
+        }
       }
       
       return token;
@@ -38,13 +67,21 @@ export const authOptions = {
         hasSession: !!session, 
         hasToken: !!token,
         hasUser: !!user,
-        hasAccessToken: !!token.accessToken
+        hasAccessToken: !!token.accessToken,
+        hasInstallationId: !!token.installationId
       });
       
+      // Add token and installation ID to the session
       session.accessToken = token.accessToken;
       
+      if (token.installationId) {
+        session.installationId = token.installationId;
+        logger.debug(MODULE_NAME, "Added installation ID to session", { installationId: token.installationId });
+      }
+      
       logger.info(MODULE_NAME, "Session created/updated", {
-        user: session.user?.email || session.user?.name || 'unknown'
+        user: session.user?.email || session.user?.name || 'unknown',
+        hasInstallationId: !!session.installationId
       });
       
       return session;
@@ -87,6 +124,28 @@ export const authOptions = {
       logger.debug(MODULE_NAME, `NextAuth debug: ${code}`, { message });
     },
   },
+  cookies: {
+    sessionToken: {
+      name: 'next-auth.session-token',
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production'
+      }
+    }
+  },
+  
+  // Properly handle the callback URL problems
+  pages: {
+    signIn: '/api/auth/signin',
+    signOut: '/api/auth/signout',
+    error: '/api/auth/error',
+    verifyRequest: '/api/auth/verify-request',
+  },
+  
+  // Add debug mode for development
+  debug: process.env.NODE_ENV !== 'production'
 };
 
 const handler = NextAuth(authOptions);
