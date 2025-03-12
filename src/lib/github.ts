@@ -72,49 +72,52 @@ export interface AppInstallation {
 export function getInstallationManagementUrl(
   installationId: number,
   accountLogin?: string,
-  accountType?: string
+  accountType?: string,
 ): string {
   // For organization installations
-  if (accountType === 'Organization' && accountLogin) {
+  if (accountType === "Organization" && accountLogin) {
     return `https://github.com/organizations/${accountLogin}/settings/installations/${installationId}`;
   }
-  
+
   // For user installations or when we don't have specific information
   return `https://github.com/settings/installations/${installationId}`;
 }
 
 // Get all GitHub App installations for the authenticated user
-export async function getAllAppInstallations(accessToken: string): Promise<AppInstallation[]> {
+export async function getAllAppInstallations(
+  accessToken: string,
+): Promise<AppInstallation[]> {
   logger.debug(MODULE_NAME, "getAllAppInstallations called", {
     accessTokenLength: accessToken?.length,
   });
-  
+
   try {
     const octokit = new Octokit({ auth: accessToken });
-    
+
     // Get all installations for the authenticated user
-    const { data } = await octokit.rest.apps.listInstallationsForAuthenticatedUser();
-    
+    const { data } =
+      await octokit.rest.apps.listInstallationsForAuthenticatedUser();
+
     // Find our app's installations
     const appName = process.env.NEXT_PUBLIC_GITHUB_APP_NAME;
     const appId = process.env.GITHUB_APP_ID;
-    
+
     logger.debug(MODULE_NAME, "Retrieved user installations", {
       installationsCount: data.installations.length,
       appName,
-      appId
+      appId,
     });
-    
+
     // Filter installations by app name/id if provided
     let filteredInstallations = data.installations;
     if (appName || appId) {
       filteredInstallations = data.installations.filter(
-        inst => inst.app_slug === appName || inst.app_id.toString() === appId
+        (inst) => inst.app_slug === appName || inst.app_id.toString() === appId,
       );
     }
-    
+
     // Map to our simplified format
-    const installations = filteredInstallations.map(inst => ({
+    const installations = filteredInstallations.map((inst) => ({
       id: inst.id,
       account: {
         login: inst.account.login,
@@ -126,83 +129,91 @@ export async function getAllAppInstallations(accessToken: string): Promise<AppIn
       repositorySelection: inst.repository_selection,
       targetType: inst.target_type,
     }));
-    
+
     logger.info(MODULE_NAME, "Found GitHub App installations", {
       count: installations.length,
-      accounts: installations.map(i => i.account.login).join(', ')
+      accounts: installations.map((i) => i.account.login).join(", "),
     });
-    
+
     return installations;
   } catch (error) {
-    logger.error(MODULE_NAME, "Error getting GitHub App installations", { error });
+    logger.error(MODULE_NAME, "Error getting GitHub App installations", {
+      error,
+    });
     return [];
   }
 }
 
 // Check if the GitHub App is installed for the authenticated user
-export async function checkAppInstallation(accessToken: string): Promise<number | null> {
+export async function checkAppInstallation(
+  accessToken: string,
+): Promise<number | null> {
   logger.debug(MODULE_NAME, "checkAppInstallation called", {
     accessTokenLength: accessToken?.length,
   });
-  
+
   try {
     // Get all installations
     const installations = await getAllAppInstallations(accessToken);
-    
+
     if (installations.length > 0) {
       // For now, return the first installation ID
       // The UI will provide a way to switch between installations
       const installationId = installations[0].id;
-      
+
       logger.info(MODULE_NAME, "Using first GitHub App installation", {
         installationId,
-        account: installations[0].account.login
+        account: installations[0].account.login,
       });
-      
+
       return installationId;
     }
-    
+
     logger.info(MODULE_NAME, "No GitHub App installation found for this user");
     return null;
   } catch (error) {
-    logger.error(MODULE_NAME, "Error checking for GitHub App installation", { error });
+    logger.error(MODULE_NAME, "Error checking for GitHub App installation", {
+      error,
+    });
     return null;
   }
 }
 
 // Get an Octokit instance with installation access token
-export async function getInstallationOctokit(installationId: number): Promise<Octokit> {
+export async function getInstallationOctokit(
+  installationId: number,
+): Promise<Octokit> {
   logger.debug(MODULE_NAME, "getInstallationOctokit called", {
-    installationId
+    installationId,
   });
-  
+
   try {
     // Verify required environment variables
     const appId = process.env.GITHUB_APP_ID;
-    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-    
+    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY_PKCS8;
+
     if (!appId || !privateKey) {
       logger.error(MODULE_NAME, "Missing GitHub App credentials", {
         hasAppId: !!appId,
-        hasPrivateKey: !!privateKey
+        hasPrivateKey: !!privateKey,
       });
       throw new Error("GitHub App credentials not configured");
     }
-    
+
     // Create an Octokit instance authenticated as the GitHub App installation
     const auth = createAppAuth({
       appId: appId,
       privateKey: privateKey.replace(/\\n/g, "\n"), // Handle newlines in the key
-      installationId
+      installationId,
     });
-    
+
     // Get an installation access token
     const installationAuth = await auth({ type: "installation" });
     logger.debug(MODULE_NAME, "Generated installation access token", {
       tokenType: installationAuth.type,
       expiresAt: installationAuth.expiresAt,
     });
-    
+
     // Create an Octokit instance with the installation token
     return new Octokit({ auth: installationAuth.token });
   } catch (error) {
@@ -371,7 +382,9 @@ export async function fetchAllRepositoriesOAuth(
 }
 
 // Fetch repositories using GitHub App installation
-export async function fetchAllRepositoriesApp(installationId: number): Promise<Repository[]> {
+export async function fetchAllRepositoriesApp(
+  installationId: number,
+): Promise<Repository[]> {
   logger.debug(MODULE_NAME, "fetchAllRepositoriesApp called", {
     installationId,
   });
@@ -379,7 +392,7 @@ export async function fetchAllRepositoriesApp(installationId: number): Promise<R
   try {
     // Get an Octokit instance with the installation access token
     const octokit = await getInstallationOctokit(installationId);
-    
+
     // Check rate limits
     try {
       const rateLimit = await octokit.rest.rateLimit.get();
@@ -388,34 +401,48 @@ export async function fetchAllRepositoriesApp(installationId: number): Promise<R
         limit: core.limit,
         remaining: core.remaining,
         reset: new Date(core.reset * 1000).toISOString(),
-        usedPercent: 100 - Number(((core.remaining / core.limit) * 100).toFixed(1)),
+        usedPercent:
+          100 - Number(((core.remaining / core.limit) * 100).toFixed(1)),
       });
     } catch (rateLimitError) {
-      logger.warn(MODULE_NAME, "Failed to check GitHub API rate limits (App auth)", {
-        error: rateLimitError,
-      });
+      logger.warn(
+        MODULE_NAME,
+        "Failed to check GitHub API rate limits (App auth)",
+        {
+          error: rateLimitError,
+        },
+      );
     }
-    
+
     // List all repositories accessible to the installation
-    logger.debug(MODULE_NAME, "Fetching repositories accessible to the installation");
-    
+    logger.debug(
+      MODULE_NAME,
+      "Fetching repositories accessible to the installation",
+    );
+
     // Use paginate to fetch all pages, not just the first 100 repos
     const repositories = await octokit.paginate(
       octokit.rest.apps.listReposAccessibleToInstallation,
       {
         per_page: 100,
-      }
+      },
     );
-    
-    logger.info(MODULE_NAME, "Fetched repositories from GitHub App installation", {
-      count: repositories.length,
-      private: repositories.filter(repo => repo.private).length,
-      public: repositories.filter(repo => !repo.private).length,
-    });
-    
+
+    logger.info(
+      MODULE_NAME,
+      "Fetched repositories from GitHub App installation",
+      {
+        count: repositories.length,
+        private: repositories.filter((repo) => repo.private).length,
+        public: repositories.filter((repo) => !repo.private).length,
+      },
+    );
+
     return repositories;
   } catch (error) {
-    logger.error(MODULE_NAME, "Error fetching repositories via GitHub App", { error });
+    logger.error(MODULE_NAME, "Error fetching repositories via GitHub App", {
+      error,
+    });
     throw error;
   }
 }
@@ -429,24 +456,35 @@ export async function fetchAllRepositories(
     hasAccessToken: !!accessToken,
     hasInstallationId: !!installationId,
   });
-  
+
   try {
     // Prefer GitHub App installation if available
     if (installationId) {
-      logger.info(MODULE_NAME, "Using GitHub App installation for repository access", {
-        installationId,
-      });
+      logger.info(
+        MODULE_NAME,
+        "Using GitHub App installation for repository access",
+        {
+          installationId,
+        },
+      );
       return await fetchAllRepositoriesApp(installationId);
     } else if (accessToken) {
       logger.info(MODULE_NAME, "Using OAuth token for repository access");
       return await fetchAllRepositoriesOAuth(accessToken);
     } else {
       // Neither authentication method is available
-      logger.error(MODULE_NAME, "No authentication method available for repository access");
-      throw new Error("No GitHub authentication available. Please sign in again.");
+      logger.error(
+        MODULE_NAME,
+        "No authentication method available for repository access",
+      );
+      throw new Error(
+        "No GitHub authentication available. Please sign in again.",
+      );
     }
   } catch (error) {
-    logger.error(MODULE_NAME, "Error in unified fetchAllRepositories", { error });
+    logger.error(MODULE_NAME, "Error in unified fetchAllRepositories", {
+      error,
+    });
     throw error;
   }
 }
@@ -533,12 +571,12 @@ export async function fetchRepositoryCommitsApp(
 
   try {
     const octokit = await getInstallationOctokit(installationId);
-    
+
     logger.debug(
       MODULE_NAME,
       `Starting pagination for ${owner}/${repo} commits via GitHub App`,
     );
-    
+
     const commits = await octokit.paginate(octokit.rest.repos.listCommits, {
       owner,
       repo,
@@ -548,12 +586,16 @@ export async function fetchRepositoryCommitsApp(
       per_page: 100,
     });
 
-    logger.info(MODULE_NAME, `Fetched commits for ${owner}/${repo} via GitHub App`, {
-      count: commits.length,
-      firstCommitSha: commits.length > 0 ? commits[0].sha : null,
-      lastCommitSha:
-        commits.length > 0 ? commits[commits.length - 1].sha : null,
-    });
+    logger.info(
+      MODULE_NAME,
+      `Fetched commits for ${owner}/${repo} via GitHub App`,
+      {
+        count: commits.length,
+        firstCommitSha: commits.length > 0 ? commits[0].sha : null,
+        lastCommitSha:
+          commits.length > 0 ? commits[commits.length - 1].sha : null,
+      },
+    );
 
     // attach repository info
     const commitsWithRepoInfo = commits.map((commit) => ({
@@ -565,9 +607,13 @@ export async function fetchRepositoryCommitsApp(
 
     return commitsWithRepoInfo;
   } catch (error) {
-    logger.error(MODULE_NAME, `Error fetching commits for ${owner}/${repo} via GitHub App`, {
-      error,
-    });
+    logger.error(
+      MODULE_NAME,
+      `Error fetching commits for ${owner}/${repo} via GitHub App`,
+      {
+        error,
+      },
+    );
     // return empty array if there's an access or other error
     return [];
   }
@@ -594,24 +640,51 @@ export async function fetchRepositoryCommits(
       author: author || "not specified",
     },
   );
-  
+
   try {
     // Prefer GitHub App installation if available
     if (installationId) {
-      logger.info(MODULE_NAME, "Using GitHub App installation for commit access", {
+      logger.info(
+        MODULE_NAME,
+        "Using GitHub App installation for commit access",
+        {
+          installationId,
+        },
+      );
+      return await fetchRepositoryCommitsApp(
         installationId,
-      });
-      return await fetchRepositoryCommitsApp(installationId, owner, repo, since, until, author);
+        owner,
+        repo,
+        since,
+        until,
+        author,
+      );
     } else if (accessToken) {
       logger.info(MODULE_NAME, "Using OAuth token for commit access");
-      return await fetchRepositoryCommitsOAuth(accessToken, owner, repo, since, until, author);
+      return await fetchRepositoryCommitsOAuth(
+        accessToken,
+        owner,
+        repo,
+        since,
+        until,
+        author,
+      );
     } else {
       // Neither authentication method is available
-      logger.error(MODULE_NAME, "No authentication method available for commit access");
-      throw new Error("No GitHub authentication available. Please sign in again.");
+      logger.error(
+        MODULE_NAME,
+        "No authentication method available for commit access",
+      );
+      throw new Error(
+        "No GitHub authentication available. Please sign in again.",
+      );
     }
   } catch (error) {
-    logger.error(MODULE_NAME, `Error in unified fetchRepositoryCommits for ${owner}/${repo}`, { error });
+    logger.error(
+      MODULE_NAME,
+      `Error in unified fetchRepositoryCommits for ${owner}/${repo}`,
+      { error },
+    );
     return [];
   }
 }
@@ -632,10 +705,15 @@ export async function fetchCommitsForRepositories(
     until,
     author: author || "not specified",
   });
-  
+
   if (!accessToken && !installationId) {
-    logger.error(MODULE_NAME, "No authentication method provided for fetching commits");
-    throw new Error("No GitHub authentication available. Please sign in again.");
+    logger.error(
+      MODULE_NAME,
+      "No authentication method provided for fetching commits",
+    );
+    throw new Error(
+      "No GitHub authentication available. Please sign in again.",
+    );
   }
 
   const allCommits: Commit[] = [];
