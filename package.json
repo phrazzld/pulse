@@ -3,17 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
-    "dev:log": "LOG_LEVEL=debug next dev --turbopack 2>&1 | tee -a ./logs/app.log",
-    "dev:debug": "LOG_LEVEL=debug next dev --turbopack",
+    "dev": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app next dev --turbopack",
+    "dev:log": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app LOG_LEVEL=debug next dev --turbopack 2>&1 | tee -a ./logs/app.log",
+    "dev:debug": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app LOG_LEVEL=debug next dev --turbopack",
     "logs:rotate": "./scripts/rotate-logs.sh",
     "logs:clean": "rm -rf ./logs/*.log",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
+    "@octokit/auth-app": "^6.0.0",
     "next": "15.2.1",
     "next-auth": "^4.24.11",
     "octokit": "^4.1.2",
@@ -25,6 +27,8 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "eslint": "^9.22.0",
+    "eslint-config-next": "^15.2.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
