@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
-import { fetchAllRepositories, fetchCommitsForRepositories, Commit } from "@/lib/github";
+import { 
+  fetchAllRepositories, 
+  fetchCommitsForRepositories, 
+  Commit, 
+  checkAppInstallation, 
+  getAllAppInstallations,
+  AppInstallation 
+} from "@/lib/github";
 import { generateCommitSummary } from "@/lib/gemini";
 import { logger } from "@/lib/logger";
 
@@ -16,10 +23,9 @@ export async function GET(request: NextRequest) {
   
   const session = await getServerSession(authOptions);
   
-  if (!session || !session.accessToken) {
+  if (!session) {
     logger.warn(MODULE_NAME, "Unauthorized request - no valid session", { 
-      sessionExists: !!session,
-      hasAccessToken: !!session?.accessToken
+      sessionExists: !!session
     });
     
     return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
@@ -30,8 +36,83 @@ export async function GET(request: NextRequest) {
     });
   }
   
+  // Get installation ID from query parameter if present
+  let requestedInstallationId = request.nextUrl.searchParams.get('installation_id');
+  let installationId = requestedInstallationId ? parseInt(requestedInstallationId, 10) : session.installationId;
+  
+  // Get all available installations if we have an access token
+  let allInstallations: AppInstallation[] = [];
+  if (session.accessToken) {
+    try {
+      allInstallations = await getAllAppInstallations(session.accessToken);
+      logger.info(MODULE_NAME, "Retrieved all GitHub App installations", {
+        count: allInstallations.length,
+        accounts: allInstallations.map(i => i.account.login)
+      });
+      
+      // If we don't have an installation ID yet, use the first available installation
+      if (!installationId && allInstallations.length > 0) {
+        installationId = allInstallations[0].id;
+        logger.info(MODULE_NAME, "Using first available installation", {
+          installationId,
+          account: allInstallations[0].account.login
+        });
+      }
+      
+      // Validate that the requested installation ID is in our list
+      if (requestedInstallationId && allInstallations.length > 0) {
+        const validInstallation = allInstallations.find(
+          inst => inst.id === parseInt(requestedInstallationId, 10)
+        );
+        
+        if (!validInstallation) {
+          logger.warn(MODULE_NAME, "Requested installation ID not found in user's installations", {
+            requestedId: requestedInstallationId,
+            availableIds: allInstallations.map(i => i.id)
+          });
+          // Fallback to the first available installation
+          installationId = allInstallations[0].id;
+        }
+      }
+    } catch (error) {
+      logger.warn(MODULE_NAME, "Error getting all GitHub App installations", { error });
+    }
+  }
+  
+  // Also check for installation ID in cookies if we still don't have one
+  if (!installationId) {
+    const cookieHeader = request.headers.get('cookie');
+    if (cookieHeader && cookieHeader.includes('github_installation_id=')) {
+      const match = cookieHeader.match(/github_installation_id=([^;]+)/);
+      if (match && match[1]) {
+        installationId = parseInt(match[1], 10);
+        logger.info(MODULE_NAME, "Found installation ID in cookie", { installationId });
+      }
+    }
+  }
+  
+  // If we don't have either auth method, we can't proceed
+  if (!installationId && !session.accessToken) {
+    logger.warn(MODULE_NAME, "No authentication method available", {
+      hasAccessToken: !!session.accessToken,
+      hasInstallationId: !!installationId
+    });
+    
+    return new NextResponse(JSON.stringify({ 
+      error: "GitHub authentication required",
+      needsInstallation: true,
+      message: "Please install the GitHub App to access your repositories."
+    }), {
+      status: 403,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
+  
   logger.info(MODULE_NAME, "Authenticated user requesting summary", { 
-    user: session.user?.email || session.user?.name || 'unknown'
+    user: session.user?.email || session.user?.name || 'unknown',
+    authMethod: installationId ? "GitHub App" : "OAuth"
   });
 
   // Get query parameters
@@ -69,18 +150,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Parse the repositories parameter
-    const selectedRepos = repoParam ? repoParam.split(",") : [];
-    logger.debug(MODULE_NAME, "Selected repositories", { count: selectedRepos.length, repos: selectedRepos });
+    // Always fetch all accessible repos
+    logger.info(MODULE_NAME, "Fetching all accessible repos", {
+      authMethod: installationId ? "GitHub App" : "OAuth"
+    });
     
-    // If no specific repos are selected, fetch all accessible repos
-    let reposToAnalyze = selectedRepos;
-    if (reposToAnalyze.length === 0) {
-      logger.info(MODULE_NAME, "No specific repos selected, fetching all accessible repos");
-      const allRepos = await fetchAllRepositories(session.accessToken);
-      reposToAnalyze = allRepos.map(repo => repo.full_name);
-      logger.debug(MODULE_NAME, "All accessible repositories", { count: reposToAnalyze.length });
-    }
+    const allRepos = await fetchAllRepositories(session.accessToken, installationId);
+    const reposToAnalyze = allRepos.map(repo => repo.full_name);
+    
+    logger.debug(MODULE_NAME, "All accessible repositories", { 
+      count: reposToAnalyze.length,
+      authMethod: installationId ? "GitHub App" : "OAuth" 
+    });
     
     const requestStartTime = Date.now();
     
@@ -98,11 +179,13 @@ export async function GET(request: NextRequest) {
     
     logger.debug(MODULE_NAME, "Fetching commits with author", { 
       authorName,
-      firstRepo: reposToAnalyze.length > 0 ? reposToAnalyze[0] : null
+      firstRepo: reposToAnalyze.length > 0 ? reposToAnalyze[0] : null,
+      authMethod: installationId ? "GitHub App" : "OAuth"
     });
     
     const commits = await fetchCommitsForRepositories(
-      session.accessToken, 
+      session.accessToken,
+      installationId, 
       reposToAnalyze, 
       since, 
       until,
@@ -113,7 +196,8 @@ export async function GET(request: NextRequest) {
     logger.info(MODULE_NAME, "Fetched commits for individual summary", {
       user: session.user?.name,
       commitCount: commits.length,
-      timeMs: commitFetchEndTime - commitFetchStartTime
+      timeMs: commitFetchEndTime - commitFetchStartTime,
+      authMethod: installationId ? "GitHub App" : "OAuth"
     });
     
     // Generate AI summary using Gemini
@@ -135,14 +219,19 @@ export async function GET(request: NextRequest) {
     logger.info(MODULE_NAME, "Completed individual summary request", {
       totalTimeMs: totalTime,
       commitCount: commits.length,
-      repoCount: stats.repositories.length
+      repoCount: stats.repositories.length,
+      authMethod: installationId ? "GitHub App" : "OAuth"
     });
     
     return NextResponse.json({
       user: session.user?.name,
       commits,
       stats,
-      aiSummary
+      aiSummary,
+      authMethod: installationId ? "github_app" : "oauth",
+      installationId: installationId || null,
+      installations: allInstallations,
+      currentInstallation: allInstallations.find(i => i.id === installationId)
     });
   } catch (error) {
     logger.error(MODULE_NAME, "Error generating summary", { 
@@ -150,11 +239,30 @@ export async function GET(request: NextRequest) {
       stack: error instanceof Error ? error.stack : undefined
     });
     
+    // Check what kind of error we have
+    const isAuthError = error?.name === 'HttpError' && 
+                       (error?.message?.includes('credentials') || 
+                        error?.message?.includes('authentication'));
+    
+    const isAppError = error?.message?.includes('GitHub App credentials not configured');
+    
+    let errorMessage = "Failed to generate summary";
+    let errorCode = "API_ERROR";
+    
+    if (isAppError) {
+      errorMessage = "GitHub App not properly configured. Please contact the administrator.";
+      errorCode = "GITHUB_APP_CONFIG_ERROR";
+    } else if (isAuthError) {
+      errorMessage = "GitHub authentication failed. Your authentication is invalid or expired.";
+      errorCode = "GITHUB_AUTH_ERROR";
+    }
+    
     return new NextResponse(JSON.stringify({ 
-      error: "Failed to generate summary", 
-      details: error instanceof Error ? error.message : "Unknown error" 
+      error: errorMessage, 
+      details: error instanceof Error ? error.message : "Unknown error",
+      code: errorCode
     }), {
-      status: 500,
+      status: (isAuthError || isAppError) ? 403 : 500,
       headers: {
         "Content-Type": "application/json",
       },
