@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import FilterPanel, { FilterState } from '@/components/FilterPanel';
+import GroupedResultsView from '@/components/GroupedResultsView';
+import { getInstallationManagementUrl } from '@/lib/github';
 
 type Repository = {
   id: number;
@@ -46,6 +49,25 @@ type CommitSummary = {
   aiSummary?: AISummary;
   authMethod?: string;
   installationId?: number | null;
+  filterInfo?: {
+    contributors: string[] | null;
+    organizations: string[] | null;
+    repositories: string[] | null;
+    dateRange: { since: string, until: string };
+    groupBy: string;
+  };
+  groupedResults?: GroupedResult[];
+};
+
+type GroupedResult = {
+  groupKey: string;
+  groupName: string;
+  groupAvatar?: string;
+  commitCount: number;
+  repositories: string[];
+  dates: string[];
+  commits: any[];
+  aiSummary?: any;
 };
 
 type InstallationAccount = {
@@ -94,6 +116,7 @@ function getGitHubAppInstallUrl() {
     return "#github-app-not-configured";
   }
   
+  // Use the standard GitHub App installation URL - our custom handler will intercept it
   return `https://github.com/apps/${appName}/installations/new`;
 }
 
@@ -116,6 +139,18 @@ export default function Dashboard() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [currentInstallation, setCurrentInstallation] = useState<Installation | null>(null);
   const [showInstallationsDropdown, setShowInstallationsDropdown] = useState(false);
+  
+  // New state for filters
+  const [activeFilters, setActiveFilters] = useState<FilterState>({
+    contributors: [],
+    organizations: [],
+    repositories: [],
+    groupBy: 'chronological',
+    generateGroupSummaries: false
+  });
+  
+  // State to track expanded groups in the grouped results view
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   
   // Handle repository fetch errors - set descriptive error message
   const handleAuthError = useCallback(() => {
@@ -211,6 +246,25 @@ export default function Dashboard() {
     setShowInstallationsDropdown(false);
   }, [installationId, fetchRepositories]);
   
+  // Function to check for installation changes when focus returns to the window
+  // This helps refresh the UI when a user uninstalls the app via the GitHub settings page
+  useEffect(() => {
+    const handleFocus = () => {
+      // Refresh installations when the window regains focus
+      if (session?.accessToken) {
+        // Only if we have a session
+        console.log('Window focused, refreshing installations');
+        fetchRepositories();
+      }
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [session, fetchRepositories]);
+  
   // Redirect if not authenticated
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -218,12 +272,49 @@ export default function Dashboard() {
     }
   }, [status, router]);
 
-  // Fetch repositories when session is available
+  // Fetch repositories when session is available and check for installation cookie
   useEffect(() => {
     if (session) {
+      // Check for GitHub installation cookie
+      const getCookie = (name: string) => {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop()?.split(';').shift();
+        return null;
+      };
+      
+      const installCookie = getCookie('github_installation_id');
+      
+      if (installCookie) {
+        console.log('Found GitHub installation cookie:', installCookie);
+        // Parse the installation ID from cookie and use it
+        const installId = parseInt(installCookie, 10);
+        if (!isNaN(installId)) {
+          fetchRepositories(installId);
+          // Clear the cookie after using it
+          document.cookie = 'github_installation_id=; path=/; max-age=0; samesite=lax';
+          return;
+        }
+      }
+      
+      // No installation cookie found, proceed with normal fetch
       fetchRepositories();
     }
   }, [session, fetchRepositories]);
+
+  // Function to handle filter changes
+  const handleFilterChange = useCallback((newFilters: FilterState) => {
+    setActiveFilters(newFilters);
+    console.log('Filters updated:', newFilters);
+  }, []);
+  
+  // Toggle expanded state for grouped results
+  const toggleGroupExpanded = useCallback((groupKey: string) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [groupKey]: !prev[groupKey]
+    }));
+  }, []);
 
   async function generateSummary(e: React.FormEvent) {
     e.preventDefault();
@@ -231,6 +322,9 @@ export default function Dashboard() {
       setLoading(true);
       setError(null);
       setSummary(null);
+      
+      // Reset expanded groups state when generating a new summary
+      setExpandedGroups({});
 
       // Construct query parameters
       const params = new URLSearchParams({
@@ -241,6 +335,26 @@ export default function Dashboard() {
       // Add installation ID if available
       if (installationId) {
         params.append('installation_id', installationId.toString());
+      }
+      
+      // Add filter parameters
+      if (activeFilters.contributors.length > 0) {
+        params.append('contributors', activeFilters.contributors.join(','));
+      }
+      
+      if (activeFilters.organizations.length > 0) {
+        params.append('organizations', activeFilters.organizations.join(','));
+      }
+      
+      if (activeFilters.repositories.length > 0) {
+        params.append('repositories', activeFilters.repositories.join(','));
+      }
+      
+      // Add grouping parameters
+      params.append('groupBy', activeFilters.groupBy);
+      
+      if (activeFilters.generateGroupSummaries) {
+        params.append('generateGroupSummaries', 'true');
       }
 
       const response = await fetch(`/api/summary?${params.toString()}`);
@@ -268,6 +382,16 @@ export default function Dashboard() {
       const data = await response.json();
       setSummary(data);
       
+      // Initialize expanded state for first few groups
+      if (data.groupedResults && data.groupedResults.length > 0) {
+        const initialExpandedState: Record<string, boolean> = {};
+        // Expand the first 3 groups by default
+        data.groupedResults.slice(0, 3).forEach((group: GroupedResult) => {
+          initialExpandedState[group.groupKey] = true;
+        });
+        setExpandedGroups(initialExpandedState);
+      }
+      
       // Update auth method and installation ID if available
       if (data.authMethod) {
         setAuthMethod(data.authMethod);
@@ -294,8 +418,6 @@ export default function Dashboard() {
       setLoading(false);
     }
   }
-
-  // Repository selection has been removed - we always use all repositories
 
   if (status === 'loading') {
     return (
@@ -553,23 +675,41 @@ export default function Dashboard() {
                         </button>
                         
                         {showInstallationsDropdown && (
-                          <div className="absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10" style={{ backgroundColor: 'var(--dark-slate)' }}>
+                          <div className="absolute right-0 mt-1 w-60 rounded-md shadow-lg z-10" style={{ backgroundColor: 'var(--dark-slate)' }}>
                             <div className="py-1 rounded-md border" style={{ borderColor: 'var(--neon-green)' }}>
                               {installations.map(installation => (
-                                <button
-                                  key={installation.id}
-                                  onClick={() => switchInstallation(installation.id)}
-                                  className="block w-full text-left px-3 py-2 text-xs transition-colors duration-150"
-                                  style={{ 
-                                    backgroundColor: installation.id === installationId 
-                                      ? 'rgba(0, 255, 135, 0.1)' 
-                                      : 'transparent',
-                                    color: 'var(--neon-green)'
-                                  }}
-                                >
-                                  {installation.account.login}
-                                  {installation.account.type === 'Organization' && ' (Org)'}
-                                </button>
+                                <div key={installation.id} className="relative">
+                                  <button
+                                    onClick={() => switchInstallation(installation.id)}
+                                    className="block w-full text-left px-3 py-2 text-xs transition-colors duration-150"
+                                    style={{ 
+                                      backgroundColor: installation.id === installationId 
+                                        ? 'rgba(0, 255, 135, 0.1)' 
+                                        : 'transparent',
+                                      color: 'var(--neon-green)'
+                                    }}
+                                  >
+                                    {installation.account.login}
+                                    {installation.account.type === 'Organization' && ' (Org)'}
+                                  </button>
+                                  
+                                  {/* Manage link */}
+                                  <a
+                                    href={getInstallationManagementUrl(installation.id, installation.account.login, installation.account.type)}
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[10px] rounded-sm"
+                                    style={{ 
+                                      backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                                      color: 'var(--electric-blue)',
+                                      border: '1px solid var(--electric-blue)',
+                                      opacity: '0.8'
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    MANAGE
+                                  </a>
+                                </div>
                               ))}
                               
                               {/* Add option to install on more accounts */}
@@ -643,7 +783,7 @@ export default function Dashboard() {
                   {installations.map(installation => (
                     <div 
                       key={installation.id}
-                      className="p-2 rounded-md border flex items-center cursor-pointer"
+                      className="p-2 rounded-md border"
                       style={{ 
                         backgroundColor: installation.id === installationId 
                           ? 'rgba(0, 255, 135, 0.1)' 
@@ -652,19 +792,42 @@ export default function Dashboard() {
                           ? 'var(--neon-green)' 
                           : 'var(--electric-blue)',
                       }}
-                      onClick={() => switchInstallation(installation.id)}
                     >
-                      <div className="flex-grow">
-                        <div className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>
-                          {installation.account.login}
+                      <div className="flex items-center cursor-pointer mb-2" onClick={() => switchInstallation(installation.id)}>
+                        <div className="flex-grow">
+                          <div className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>
+                            {installation.account.login}
+                          </div>
+                          <div className="text-xs" style={{ color: 'var(--electric-blue)' }}>
+                            {installation.account.type}
+                          </div>
                         </div>
-                        <div className="text-xs" style={{ color: 'var(--electric-blue)' }}>
-                          {installation.account.type}
-                        </div>
+                        {installation.id === installationId && (
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--neon-green)' }}></div>
+                        )}
                       </div>
-                      {installation.id === installationId && (
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--neon-green)' }}></div>
-                      )}
+                      
+                      <div className="flex justify-between items-center mt-2">
+                        {/* Manage button */}
+                        <a
+                          href={getInstallationManagementUrl(
+                            installation.id, 
+                            installation.account.login, 
+                            installation.account.type
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 rounded transition-colors"
+                          style={{ 
+                            backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                            color: 'var(--electric-blue)',
+                            border: '1px solid var(--electric-blue)'
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          MANAGE
+                        </a>
+                      </div>
                     </div>
                   ))}
                   
@@ -686,6 +849,14 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+            
+            {/* Filter Panel Component */}
+            <FilterPanel 
+              onFilterChange={handleFilterChange}
+              isLoading={loading}
+              installations={installations}
+              currentUsername={session?.user?.name || undefined}
+            />
 
             <form onSubmit={generateSummary} className="space-y-8">
               {/* Date range controls with cyberpunk styling */}
@@ -806,6 +977,47 @@ export default function Dashboard() {
                             style={{ backgroundColor: 'var(--neon-green)' }}></span>
                           <span>ANALYZING ALL ACCESSIBLE REPOSITORIES</span>
                         </div>
+                        
+                        {/* Display filter information if applied */}
+                        {(activeFilters.contributors.length > 0 || 
+                          activeFilters.organizations.length > 0 || 
+                          activeFilters.repositories.length > 0 || 
+                          activeFilters.groupBy !== 'chronological') && (
+                          <div className="mt-2 p-2 border rounded" style={{ 
+                            borderColor: 'rgba(0, 255, 135, 0.2)',
+                            backgroundColor: 'rgba(0, 0, 0, 0.2)'
+                          }}>
+                            <div className="text-xs" style={{ color: 'var(--neon-green)' }}>
+                              ACTIVE FILTERS
+                            </div>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {activeFilters.contributors.length > 0 && (
+                                <span className="text-xs px-2 py-0.5 rounded" style={{ 
+                                  backgroundColor: 'rgba(0, 255, 135, 0.1)',
+                                  color: 'var(--foreground)'
+                                }}>
+                                  Contributors: {activeFilters.contributors.includes('me') ? 'Only Me' : activeFilters.contributors.join(', ')}
+                                </span>
+                              )}
+                              {activeFilters.organizations.length > 0 && (
+                                <span className="text-xs px-2 py-0.5 rounded" style={{ 
+                                  backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                                  color: 'var(--foreground)'
+                                }}>
+                                  Orgs: {activeFilters.organizations.join(', ')}
+                                </span>
+                              )}
+                              {activeFilters.groupBy !== 'chronological' && (
+                                <span className="text-xs px-2 py-0.5 rounded" style={{ 
+                                  backgroundColor: 'rgba(255, 200, 87, 0.1)',
+                                  color: 'var(--foreground)'
+                                }}>
+                                  Group by: {activeFilters.groupBy}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                         
                         {/* Repository stats summary */}
                         {repositories.length > 0 && (
@@ -979,6 +1191,18 @@ export default function Dashboard() {
                   <span>ANALYSIS COMPLETE</span>
                 </div>
               </div>
+
+              {/* Grouped Results View (if using grouping) */}
+              {summary.groupedResults && summary.filterInfo?.groupBy !== 'chronological' && (
+                <div className="mb-8">
+                  <GroupedResultsView 
+                    groupedResults={summary.groupedResults}
+                    groupBy={summary.filterInfo?.groupBy as any || 'chronological'}
+                    expanded={expandedGroups}
+                    onToggleExpand={toggleGroupExpanded}
+                  />
+                </div>
+              )}
 
               {/* Stats dashboard with cyber styling */}
               <div className="mb-8">
