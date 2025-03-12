@@ -36,12 +36,13 @@ export async function GET(request: NextRequest) {
   // In a production environment, you might want to store this in a database
   const response = NextResponse.redirect(new URL('/dashboard', request.url));
   
-  // Set the installation_id cookie
+  // Set the installation_id cookie - httpOnly:false so JS can read it
   response.cookies.set("github_installation_id", installationId, {
     path: "/",
-    httpOnly: true,
+    httpOnly: false,
     maxAge: 30 * 24 * 60 * 60, // 30 days
-    sameSite: "lax"
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === 'production'
   });
   
   logger.debug(MODULE_NAME, "Redirecting to dashboard with installation_id cookie set");
