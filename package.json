@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app next dev --turbopack",
-    "dev:log": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app LOG_LEVEL=debug next dev --turbopack 2>&1 | tee -a ./logs/app.log",
-    "dev:debug": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-app LOG_LEVEL=debug next dev --turbopack",
+    "dev": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-summarizer next dev --turbopack",
+    "dev:log": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-summarizer LOG_LEVEL=debug next dev --turbopack 2>&1 | tee -a ./logs/app.log",
+    "dev:debug": "NEXTAUTH_URL=http://localhost:3000 NEXT_PUBLIC_GITHUB_APP_NAME=pulse-summarizer LOG_LEVEL=debug next dev --turbopack",
     "logs:rotate": "./scripts/rotate-logs.sh",
     "logs:clean": "rm -rf ./logs/*.log",
     "build": "next build",

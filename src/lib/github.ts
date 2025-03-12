@@ -62,6 +62,27 @@ export interface AppInstallation {
   targetType: string; // 'User' or 'Organization'
 }
 
+/**
+ * Generate the URL for managing a GitHub App installation
+ * @param installationId The installation ID
+ * @param accountLogin The account login (organization or user)
+ * @param accountType The account type ('Organization' or 'User')
+ * @returns The URL to GitHub's installation management page
+ */
+export function getInstallationManagementUrl(
+  installationId: number,
+  accountLogin?: string,
+  accountType?: string
+): string {
+  // For organization installations
+  if (accountType === 'Organization' && accountLogin) {
+    return `https://github.com/organizations/${accountLogin}/settings/installations/${installationId}`;
+  }
+  
+  // For user installations or when we don't have specific information
+  return `https://github.com/settings/installations/${installationId}`;
+}
+
 // Get all GitHub App installations for the authenticated user
 export async function getAllAppInstallations(accessToken: string): Promise<AppInstallation[]> {
   logger.debug(MODULE_NAME, "getAllAppInstallations called", {
@@ -75,7 +96,7 @@ export async function getAllAppInstallations(accessToken: string): Promise<AppIn
     const { data } = await octokit.rest.apps.listInstallationsForAuthenticatedUser();
     
     // Find our app's installations
-    const appName = process.env.GITHUB_APP_NAME;
+    const appName = process.env.NEXT_PUBLIC_GITHUB_APP_NAME;
     const appId = process.env.GITHUB_APP_ID;
     
     logger.debug(MODULE_NAME, "Retrieved user installations", {
