@@ -126,11 +126,62 @@ export async function GET(request: NextRequest) {
         }
       });
     } else {
-      // We'll need to add placeholder logic here for when we don't have commits
-      // but want to show potential contributors
-      // This would typically involve querying the GitHub API for repository collaborators
-      // But for now, we'll just return an empty set
-      logger.info(MODULE_NAME, "No commits or date range provided, returning empty contributor set");
+      // If no date range is provided, we'll fetch recent commits (last 30 days)
+      // to show some contributors even without explicit date filters
+      logger.info(MODULE_NAME, "No date range provided, using last 30 days as default");
+      
+      if (repoNames.length > 0) {
+        // Calculate last 30 days date range
+        const endDate = new Date().toISOString().split('T')[0];
+        const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        
+        try {
+          const defaultCommits = await fetchCommitsForRepositories(
+            session.accessToken,
+            installationId,
+            repoNames,
+            startDate,
+            endDate
+          );
+          
+          // Extract unique contributors from these commits
+          defaultCommits.forEach(commit => {
+            if (!commit.author) return; // Skip commits without author info
+            
+            const username = commit.author.login;
+            const displayName = commit.commit.author?.name || username;
+            const email = commit.commit.author?.email || null;
+            const avatarUrl = commit.author.avatar_url || null;
+            
+            if (contributorsMap.has(username)) {
+              // Increment commit count for existing contributor
+              const existing = contributorsMap.get(username);
+              if (existing) {
+                existing.commitCount = (existing.commitCount || 0) + 1;
+              }
+            } else {
+              // Add new contributor
+              contributorsMap.set(username, {
+                username,
+                displayName,
+                email,
+                avatarUrl,
+                commitCount: 1
+              });
+            }
+          });
+          
+          logger.info(MODULE_NAME, "Fetched default contributors using last 30 days", {
+            count: contributorsMap.size,
+            commits: defaultCommits.length
+          });
+        } catch (error) {
+          logger.error(MODULE_NAME, "Error fetching default contributors", { error });
+          logger.info(MODULE_NAME, "Falling back to empty contributor set");
+        }
+      } else {
+        logger.info(MODULE_NAME, "No repositories available, returning empty contributor set");
+      }
     }
     
     // Convert map to array and sort by commit count or name

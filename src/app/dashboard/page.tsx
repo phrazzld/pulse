@@ -247,46 +247,77 @@ export default function Dashboard() {
       const selectedInstallation = installations.find(inst => inst.id === installId);
       
       fetchRepositories(installId).then(success => {
-        // If we successfully switched, update the organization filter to match the selected installation
-        if (success && selectedInstallation) {
-          // Update the activeFilters to include the newly selected installation's account
-          setActiveFilters(prev => {
-            // If we're switching accounts, we probably want to filter by this account
-            // Add it to any existing organization filters
-            const newOrgs = [...prev.organizations];
-            if (!newOrgs.includes(selectedInstallation.account.login)) {
-              newOrgs.push(selectedInstallation.account.login);
-            }
-            return {
-              ...prev,
-              organizations: newOrgs
-            };
-          });
+        // If we successfully switched, update the cache timestamp and organization filter
+        if (success) {
+          // Update last refresh timestamp
+          localStorage.setItem('lastRepositoryRefresh', Date.now().toString());
+          
+          // Update the organization filter if we have the selected installation
+          if (selectedInstallation) {
+            // Update the activeFilters to include the newly selected installation's account
+            setActiveFilters(prev => {
+              // If we're switching accounts, we probably want to filter by this account
+              // Add it to any existing organization filters
+              const newOrgs = [...prev.organizations];
+              if (!newOrgs.includes(selectedInstallation.account.login)) {
+                newOrgs.push(selectedInstallation.account.login);
+              }
+              return {
+                ...prev,
+                organizations: newOrgs
+              };
+            });
+          }
         }
       });
     }
   }, [installationId, fetchRepositories, installations, setActiveFilters]);
   
+  // Function to check whether repositories need to be refreshed
+  const shouldRefreshRepositories = useCallback(() => {
+    // Don't refresh if we have no session
+    if (!session?.accessToken) return false;
+    
+    // Don't refresh if we already have repositories and it hasn't been long since last refresh
+    if (repositories.length > 0) {
+      const lastRefreshTime = localStorage.getItem('lastRepositoryRefresh');
+      if (lastRefreshTime) {
+        // Only refresh if it's been more than 5 minutes since last refresh
+        const fiveMinutes = 5 * 60 * 1000;
+        const timeSinceLastRefresh = Date.now() - parseInt(lastRefreshTime, 10);
+        return timeSinceLastRefresh > fiveMinutes;
+      }
+    }
+    
+    return true;
+  }, [session, repositories.length]);
+  
   // Function to check for installation changes when focus returns to the window
   // This helps refresh the UI when a user uninstalls the app via the GitHub settings page
   useEffect(() => {
     const handleFocus = () => {
-      // Refresh installations when the window regains focus
-      if (session?.accessToken) {
-        // Only if we have a session
-        console.log('Window focused, refreshing installations');
+      // Only refresh if needed
+      if (shouldRefreshRepositories()) {
+        console.log('Window focused, refreshing repositories (due to cache expiration)');
         // Save current selections
         const currentOrgSelections = activeFilters.organizations;
         // After fetching, we'll sync the filter state with current selections
-        fetchRepositories().then(() => {
-          // If we had organizations selected in filters, preserve those selections
-          if (currentOrgSelections.length > 0) {
-            setActiveFilters(prev => ({
-              ...prev,
-              organizations: currentOrgSelections
-            }));
+        fetchRepositories().then((success) => {
+          // Update the last refresh time
+          if (success) {
+            localStorage.setItem('lastRepositoryRefresh', Date.now().toString());
+            
+            // If we had organizations selected in filters, preserve those selections
+            if (currentOrgSelections.length > 0) {
+              setActiveFilters(prev => ({
+                ...prev,
+                organizations: currentOrgSelections
+              }));
+            }
           }
         });
+      } else {
+        console.log('Window focused, skipping repository refresh (recently fetched)');
       }
     };
     
@@ -295,7 +326,7 @@ export default function Dashboard() {
     return () => {
       window.removeEventListener('focus', handleFocus);
     };
-  }, [session, fetchRepositories, activeFilters.organizations, setActiveFilters]);
+  }, [session, fetchRepositories, activeFilters.organizations, setActiveFilters, shouldRefreshRepositories]);
   
   // Redirect if not authenticated
   useEffect(() => {
@@ -322,7 +353,11 @@ export default function Dashboard() {
         // Parse the installation ID from cookie and use it
         const installId = parseInt(installCookie, 10);
         if (!isNaN(installId)) {
-          fetchRepositories(installId);
+          fetchRepositories(installId).then(success => {
+            if (success) {
+              localStorage.setItem('lastRepositoryRefresh', Date.now().toString());
+            }
+          });
           // Clear the cookie after using it
           document.cookie = 'github_installation_id=; path=/; max-age=0; samesite=lax';
           return;
@@ -330,7 +365,11 @@ export default function Dashboard() {
       }
       
       // No installation cookie found, proceed with normal fetch
-      fetchRepositories();
+      fetchRepositories().then(success => {
+        if (success) {
+          localStorage.setItem('lastRepositoryRefresh', Date.now().toString());
+        }
+      });
     }
   }, [session, fetchRepositories]);
 

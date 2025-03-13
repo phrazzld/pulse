@@ -59,13 +59,19 @@ export default function FilterPanel({
       // Convert installations to organization list
       const orgList = installations.map(inst => inst.account.login).join(',');
       
-      const response = await fetch(`/api/contributors?organizations=${orgList}`);
+      // The API now handles adding a date range if none is provided
+      const response = await fetch(`/api/contributors?organizations=${orgList}&include_commit_count=true`);
       if (!response.ok) {
         throw new Error('Failed to fetch contributors');
       }
       
       const data = await response.json();
       setContributors(data.contributors || []);
+      
+      // Set a flag in localStorage to prevent excessive fetching
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('contributorsFetchedAt', Date.now().toString());
+      }
     } catch (error) {
       console.error('Error fetching contributors:', error);
     } finally {
@@ -73,12 +79,24 @@ export default function FilterPanel({
     }
   }, [installations, setContributors, setLoadingContributors]);
   
+  // Check if we should fetch based on cache time
+  const shouldFetchContributors = useCallback(() => {
+    if (typeof window === 'undefined') return true;
+    
+    const lastFetchedAt = localStorage.getItem('contributorsFetchedAt');
+    if (!lastFetchedAt) return true;
+    
+    // Only fetch if it's been more than 15 minutes since last fetch
+    const fifteenMinutes = 15 * 60 * 1000;
+    return Date.now() - parseInt(lastFetchedAt, 10) > fifteenMinutes;
+  }, []);
+  
   // Fetch contributors when the component loads
   useEffect(() => {
-    if (expanded && contributors.length === 0 && !loadingContributors) {
+    if (expanded && !loadingContributors && (contributors.length === 0 || shouldFetchContributors())) {
       fetchContributors();
     }
-  }, [expanded, contributors.length, loadingContributors, fetchContributors]);
+  }, [expanded, contributors.length, loadingContributors, fetchContributors, shouldFetchContributors]);
 
   // Apply filters when any filter changes
   useEffect(() => {
