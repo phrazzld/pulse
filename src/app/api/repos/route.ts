@@ -169,8 +169,12 @@ export async function GET(request: NextRequest) {
       repositories,
       authMethod: installationId ? "github_app" : "oauth",
       installationId: installationId || null,
+      installationIds: installationId ? [installationId] : [],
       installations: allInstallations,
-      currentInstallation: allInstallations.find(i => i.id === installationId)
+      currentInstallation: allInstallations.find(i => i.id === installationId),
+      currentInstallations: installationId 
+        ? allInstallations.filter(i => i.id === installationId) 
+        : []
     });
   } catch (error) {
     logger.error(MODULE_NAME, "Error fetching repositories", { error });

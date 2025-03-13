@@ -90,8 +90,10 @@ type ReposResponse = {
   repositories: Repository[];
   authMethod?: string;
   installationId?: number | null;
+  installationIds?: number[];
   installations?: Installation[];
   currentInstallation?: Installation | null;
+  currentInstallations?: Installation[];
 };
 
 // Helper functions for date formatting
@@ -136,9 +138,9 @@ export default function Dashboard() {
   const [showRepoList, setShowRepoList] = useState(true);
   const [authMethod, setAuthMethod] = useState<string | null>(null);
   const [needsInstallation, setNeedsInstallation] = useState(false);
-  const [installationId, setInstallationId] = useState<number | null>(null);
+  const [installationIds, setInstallationIds] = useState<number[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
-  const [currentInstallation, setCurrentInstallation] = useState<Installation | null>(null);
+  const [currentInstallations, setCurrentInstallations] = useState<Installation[]>([]);
   
   // New state for filters
   const [activeFilters, setActiveFilters] = useState<FilterState>({
@@ -211,7 +213,8 @@ export default function Dashboard() {
       }
       
       if (data.installationId) {
-        setInstallationId(data.installationId);
+        // Add to the installation IDs array if not already included
+        setInstallationIds(prev => prev.includes(data.installationId!) ? prev : [...prev, data.installationId!]);
         console.log('Using GitHub App installation ID:', data.installationId);
         setNeedsInstallation(false); // Clear the installation needed flag
       }
@@ -222,9 +225,17 @@ export default function Dashboard() {
         console.log('Available installations:', data.installations.length);
       }
       
-      // Update current installation
+      // Update current installations
       if (data.currentInstallation) {
-        setCurrentInstallation(data.currentInstallation);
+        setCurrentInstallations(prev => {
+          // Check if this installation is already in the array
+          const exists = prev.some(inst => inst.id === data.currentInstallation!.id);
+          
+          if (!exists) {
+            return [...prev, data.currentInstallation!];
+          }
+          return prev;
+        });
         console.log('Current installation:', data.currentInstallation.account.login);
       }
       
@@ -237,41 +248,66 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [handleAuthError, handleAppInstallationNeeded, setRepositories, setError, setLoading, setAuthMethod, setInstallationId, setInstallations, setCurrentInstallation]);
+  }, [handleAuthError, handleAppInstallationNeeded, setRepositories, setError, setLoading, setAuthMethod, setInstallationIds, setInstallations, setCurrentInstallations]);
   
   // Function to handle switching installations
-  const switchInstallation = useCallback((installId: number) => {
-    if (installId !== installationId) {
-      console.log('Switching to installation ID:', installId);
-      // Get the selected installation's account login
-      const selectedInstallation = installations.find(inst => inst.id === installId);
+  const switchInstallations = useCallback((installIds: number[]) => {
+    // Check if the installation selection has changed
+    const currentIds = currentInstallations.map(inst => inst.id);
+    const hasSelectionChanged = 
+      installIds.length !== currentIds.length || 
+      installIds.some(id => !currentIds.includes(id));
+    
+    if (hasSelectionChanged) {
+      console.log('Switching to installation IDs:', installIds);
       
-      fetchRepositories(installId).then(success => {
+      // Get the selected installations' account logins
+      const selectedInstallations = installations.filter(inst => installIds.includes(inst.id));
+      
+      // If no installations are selected, don't fetch anything
+      if (installIds.length === 0) {
+        return;
+      }
+      
+      // For now, we'll use the first selected installation ID for fetching
+      // This will need to be updated in the API to support multiple installation IDs
+      const primaryInstallId = installIds[0];
+      
+      fetchRepositories(primaryInstallId).then(success => {
         // If we successfully switched, update the cache timestamp and organization filter
         if (success) {
           // Update last refresh timestamp
           localStorage.setItem('lastRepositoryRefresh', Date.now().toString());
           
-          // Update the organization filter if we have the selected installation
-          if (selectedInstallation) {
-            // Update the activeFilters to include the newly selected installation's account
+          // Update the organization filter to include all selected installations' accounts
+          if (selectedInstallations.length > 0) {
+            // Update the activeFilters to include all newly selected installations' accounts
             setActiveFilters(prev => {
-              // If we're switching accounts, we probably want to filter by this account
-              // Add it to any existing organization filters
               const newOrgs = [...prev.organizations];
-              if (!newOrgs.includes(selectedInstallation.account.login)) {
-                newOrgs.push(selectedInstallation.account.login);
-              }
+              
+              // Add all selected installations' accounts to the organizations filter
+              selectedInstallations.forEach(installation => {
+                if (!newOrgs.includes(installation.account.login)) {
+                  newOrgs.push(installation.account.login);
+                }
+              });
+              
               return {
                 ...prev,
                 organizations: newOrgs
               };
             });
           }
+          
+          // Update the current installations
+          setCurrentInstallations(selectedInstallations);
+          
+          // Update the installation IDs state
+          setInstallationIds(installIds);
         }
       });
     }
-  }, [installationId, fetchRepositories, installations, setActiveFilters]);
+  }, [currentInstallations, fetchRepositories, installations, setActiveFilters]);
   
   // Function to check whether repositories need to be refreshed
   const shouldRefreshRepositories = useCallback(() => {
@@ -403,9 +439,9 @@ export default function Dashboard() {
         until: dateRange.until,
       });
       
-      // Add installation ID if available
-      if (installationId) {
-        params.append('installation_id', installationId.toString());
+      // Add installation IDs if available
+      if (installationIds.length > 0) {
+        params.append('installation_ids', installationIds.join(','));
       }
       
       // Add filter parameters
@@ -463,13 +499,13 @@ export default function Dashboard() {
         setExpandedGroups(initialExpandedState);
       }
       
-      // Update auth method and installation ID if available
+      // Update auth method and installation IDs if available
       if (data.authMethod) {
         setAuthMethod(data.authMethod);
       }
       
-      if (data.installationId) {
-        setInstallationId(data.installationId);
+      if (data.installationIds && data.installationIds.length > 0) {
+        setInstallationIds(data.installationIds);
         setNeedsInstallation(false); // Clear the installation needed flag
       }
       
@@ -478,9 +514,9 @@ export default function Dashboard() {
         setInstallations(data.installations);
       }
       
-      // Update current installation
-      if (data.currentInstallation) {
-        setCurrentInstallation(data.currentInstallation);
+      // Update current installations
+      if (data.currentInstallations && data.currentInstallations.length > 0) {
+        setCurrentInstallations(data.currentInstallations);
       }
     } catch (error: any) {
       console.error('Error generating summary:', error);
@@ -737,17 +773,26 @@ export default function Dashboard() {
                             type: installation.account.type,
                             avatarUrl: installation.account.avatarUrl
                           }))}
-                          selectedAccounts={currentInstallation ? [currentInstallation.account.login] : []}
+                          selectedAccounts={currentInstallations.map(inst => inst.account.login)}
                           onSelectionChange={(selected) => {
                             if (selected.length > 0) {
-                              const selectedInstall = installations.find(i => i.account.login === selected[0]);
-                              if (selectedInstall) {
-                                switchInstallation(selectedInstall.id);
-                              }
+                              // Map selected login names to installation IDs
+                              const selectedInstallIds = selected
+                                .map(login => {
+                                  const inst = installations.find(i => i.account.login === login);
+                                  return inst ? inst.id : null;
+                                })
+                                .filter(id => id !== null) as number[];
+                              
+                              // Switch to the selected installations
+                              switchInstallations(selectedInstallIds);
+                            } else {
+                              // Handle case when no accounts are selected
+                              switchInstallations([]);
                             }
                           }}
                           isLoading={loading}
-                          multiSelect={false}
+                          multiSelect={true}
                           showCurrentLabel={false}
                         />
                       </div>
@@ -772,12 +817,12 @@ export default function Dashboard() {
                     )}
                     
                     {/* Manage current installation */}
-                    {authMethod === 'github_app' && currentInstallation && (
+                    {authMethod === 'github_app' && currentInstallations.length > 0 && (
                       <a
                         href={getInstallationManagementUrl(
-                          currentInstallation.id, 
-                          currentInstallation.account.login, 
-                          currentInstallation.account.type
+                          currentInstallations[0].id, 
+                          currentInstallations[0].account.login, 
+                          currentInstallations[0].account.type
                         )}
                         target="_blank" 
                         rel="noopener noreferrer"
@@ -793,7 +838,7 @@ export default function Dashboard() {
                     )}
                     
                     {/* Install button for OAuth users */}
-                    {authMethod !== 'github_app' && !installationId && !needsInstallation && (
+                    {authMethod !== 'github_app' && installationIds.length === 0 && !needsInstallation && (
                       <>
                         {getGitHubAppInstallUrl() === "#github-app-not-configured" ? (
                           <div className="text-xs px-2 py-1 rounded-md" style={{ 
@@ -861,12 +906,12 @@ export default function Dashboard() {
                       ADD ACCOUNT
                     </a>
                     
-                    {currentInstallation && (
+                    {currentInstallations.length > 0 && (
                       <a
                         href={getInstallationManagementUrl(
-                          currentInstallation.id, 
-                          currentInstallation.account.login, 
-                          currentInstallation.account.type
+                          currentInstallations[0].id, 
+                          currentInstallations[0].account.login, 
+                          currentInstallations[0].account.type
                         )}
                         target="_blank" 
                         rel="noopener noreferrer"
@@ -885,7 +930,7 @@ export default function Dashboard() {
                 
                 <div className="flex flex-col items-center">
                   <div className="w-full max-w-xl">
-                    <div className="text-xs font-bold mb-2" style={{ color: 'var(--neon-green)' }}>ACTIVE ACCOUNT:</div>
+                    <div className="text-xs font-bold mb-2" style={{ color: 'var(--neon-green)' }}>ACTIVE ACCOUNTS:</div>
                     <AccountSelector
                       accounts={installations.map(installation => ({
                         id: installation.id,
@@ -893,23 +938,32 @@ export default function Dashboard() {
                         type: installation.account.type,
                         avatarUrl: installation.account.avatarUrl
                       }))}
-                      selectedAccounts={currentInstallation ? [currentInstallation.account.login] : []}
+                      selectedAccounts={currentInstallations.map(inst => inst.account.login)}
                       onSelectionChange={(selected) => {
                         if (selected.length > 0) {
-                          const selectedInstall = installations.find(i => i.account.login === selected[0]);
-                          if (selectedInstall) {
-                            switchInstallation(selectedInstall.id);
-                          }
+                          // Map selected login names to installation IDs
+                          const selectedInstallIds = selected
+                            .map(login => {
+                              const inst = installations.find(i => i.account.login === login);
+                              return inst ? inst.id : null;
+                            })
+                            .filter(id => id !== null) as number[];
+                          
+                          // Switch to the selected installations
+                          switchInstallations(selectedInstallIds);
+                        } else {
+                          // Handle case when no accounts are selected
+                          switchInstallations([]);
                         }
                       }}
                       isLoading={loading}
-                      multiSelect={false}
+                      multiSelect={true}
                       showCurrentLabel={true}
                       currentUsername={session?.user?.name || ""}
                     />
                     
                     <div className="mt-2 text-xs" style={{ color: 'var(--foreground)' }}>
-                      Select the account you want to analyze. This determines which repositories you&apos;ll have access to.
+                      Select one or more accounts to analyze. This determines which repositories you&apos;ll have access to for analysis.
                     </div>
                   </div>
                 </div>

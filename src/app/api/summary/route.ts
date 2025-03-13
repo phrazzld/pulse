@@ -51,9 +51,22 @@ export async function GET(request: NextRequest) {
     });
   }
   
-  // Get installation ID from query parameter if present
-  let requestedInstallationId = request.nextUrl.searchParams.get('installation_id');
-  let installationId = requestedInstallationId ? parseInt(requestedInstallationId, 10) : session.installationId;
+  // Get installation IDs from query parameter if present
+  let requestedInstallationIds = request.nextUrl.searchParams.get('installation_ids');
+  let installationIds: number[] = [];
+  
+  if (requestedInstallationIds) {
+    // Parse comma-separated installation IDs
+    installationIds = requestedInstallationIds
+      .split(',')
+      .map(id => parseInt(id.trim(), 10))
+      .filter(id => !isNaN(id));
+      
+    logger.debug(MODULE_NAME, "Parsed installation IDs from request", { installationIds });
+  } else if (session.installationId) {
+    // If no IDs provided but session has one, use that
+    installationIds = [session.installationId];
+  }
   
   // Get all available installations if we have an access token
   let allInstallations: AppInstallation[] = [];
@@ -65,28 +78,42 @@ export async function GET(request: NextRequest) {
         accounts: allInstallations.map(i => i.account.login)
       });
       
-      // If we don't have an installation ID yet, use the first available installation
-      if (!installationId && allInstallations.length > 0) {
-        installationId = allInstallations[0].id;
+      // If we don't have any installation IDs yet, use the first available installation
+      if (installationIds.length === 0 && allInstallations.length > 0) {
+        installationIds = [allInstallations[0].id];
         logger.info(MODULE_NAME, "Using first available installation", {
-          installationId,
+          installationId: allInstallations[0].id,
           account: allInstallations[0].account.login
         });
       }
       
-      // Validate that the requested installation ID is in our list
-      if (requestedInstallationId && allInstallations.length > 0) {
-        const validInstallation = allInstallations.find(
-          inst => inst.id === parseInt(requestedInstallationId, 10)
+      // Validate that the requested installation IDs are in our list
+      if (installationIds.length > 0 && allInstallations.length > 0) {
+        // Filter to only valid installation IDs
+        const validInstallationIds = installationIds.filter(id => 
+          allInstallations.some(inst => inst.id === id)
         );
         
-        if (!validInstallation) {
-          logger.warn(MODULE_NAME, "Requested installation ID not found in user's installations", {
-            requestedId: requestedInstallationId,
+        // Log any invalid IDs that were filtered out
+        const invalidIds = installationIds.filter(id => 
+          !validInstallationIds.includes(id)
+        );
+        
+        if (invalidIds.length > 0) {
+          logger.warn(MODULE_NAME, "Some requested installation IDs not found in user's installations", {
+            invalidIds,
             availableIds: allInstallations.map(i => i.id)
           });
-          // Fallback to the first available installation
-          installationId = allInstallations[0].id;
+        }
+        
+        // If none of the requested IDs are valid, fallback to the first available
+        if (validInstallationIds.length === 0 && allInstallations.length > 0) {
+          installationIds = [allInstallations[0].id];
+          logger.warn(MODULE_NAME, "No valid installation IDs found, using default", {
+            defaultId: allInstallations[0].id
+          });
+        } else {
+          installationIds = validInstallationIds;
         }
       }
     } catch (error) {
@@ -94,23 +121,24 @@ export async function GET(request: NextRequest) {
     }
   }
   
-  // Also check for installation ID in cookies if we still don't have one
-  if (!installationId) {
+  // Also check for installation ID in cookies if we don't have any
+  if (installationIds.length === 0) {
     const cookieHeader = request.headers.get('cookie');
     if (cookieHeader && cookieHeader.includes('github_installation_id=')) {
       const match = cookieHeader.match(/github_installation_id=([^;]+)/);
       if (match && match[1]) {
-        installationId = parseInt(match[1], 10);
-        logger.info(MODULE_NAME, "Found installation ID in cookie", { installationId });
+        const cookieId = parseInt(match[1], 10);
+        installationIds = [cookieId];
+        logger.info(MODULE_NAME, "Found installation ID in cookie", { installationId: cookieId });
       }
     }
   }
   
   // If we don't have either auth method, we can't proceed
-  if (!installationId && !session.accessToken) {
+  if (installationIds.length === 0 && !session.accessToken) {
     logger.warn(MODULE_NAME, "No authentication method available", {
       hasAccessToken: !!session.accessToken,
-      hasInstallationId: !!installationId
+      hasInstallationIds: installationIds.length > 0
     });
     
     return new NextResponse(JSON.stringify({ 
@@ -127,7 +155,8 @@ export async function GET(request: NextRequest) {
   
   logger.info(MODULE_NAME, "Authenticated user requesting summary", { 
     user: session.user?.email || session.user?.name || 'unknown',
-    authMethod: installationId ? "GitHub App" : "OAuth"
+    authMethod: installationIds.length > 0 ? "GitHub App" : "OAuth",
+    installationCount: installationIds.length
   });
 
   // Get query parameters
@@ -191,10 +220,32 @@ export async function GET(request: NextRequest) {
   try {
     // Fetch all repositories the user has access to
     logger.info(MODULE_NAME, "Fetching all accessible repos", {
-      authMethod: installationId ? "GitHub App" : "OAuth"
+      authMethod: installationIds.length > 0 ? "GitHub App" : "OAuth",
+      installationCount: installationIds.length
     });
     
-    const allRepos = await fetchAllRepositories(session.accessToken, installationId);
+    // Fetch repositories from all selected installations
+    let allRepos = [];
+    
+    if (installationIds.length > 0) {
+      // Fetch repos from all installations in parallel
+      const repoPromises = installationIds.map(id => 
+        fetchAllRepositories(session.accessToken, id)
+      );
+      
+      const repoResults = await Promise.all(repoPromises);
+      
+      // Combine all repositories from all installations
+      allRepos = repoResults.flat();
+      
+      logger.debug(MODULE_NAME, "Fetched repositories from multiple installations", {
+        installationCount: installationIds.length,
+        totalRepoCount: allRepos.length
+      });
+    } else {
+      // Fetch with OAuth only
+      allRepos = await fetchAllRepositories(session.accessToken);
+    }
     
     // Apply organization and repository filters
     let filteredRepos = allRepos;
@@ -273,14 +324,103 @@ export async function GET(request: NextRequest) {
       dateRange: { since, until }
     });
     
-    const commits = await fetchCommitsForRepositories(
-      session.accessToken,
-      installationId, 
-      reposToAnalyze, 
-      since, 
-      until,
-      authorFilter
-    );
+    // For each unique organization in reposToAnalyze, find the corresponding installation ID
+    const orgToInstallationMap = new Map<string, number>();
+    
+    if (installationIds.length > 0) {
+      reposToAnalyze.forEach(repoFullName => {
+        const orgName = repoFullName.split('/')[0];
+        
+        // Find an installation for this org if we don't already have one mapped
+        if (!orgToInstallationMap.has(orgName)) {
+          const matchingInstallation = allInstallations.find(
+            inst => inst.account.login === orgName && installationIds.includes(inst.id)
+          );
+          
+          if (matchingInstallation) {
+            orgToInstallationMap.set(orgName, matchingInstallation.id);
+          }
+        }
+      });
+      
+      logger.debug(MODULE_NAME, "Created organization to installation mapping", {
+        mappingCount: orgToInstallationMap.size,
+        orgsWithInstallations: Array.from(orgToInstallationMap.keys())
+      });
+    }
+    
+    // Group repositories by installation ID for efficient fetching
+    const reposByInstallation: Record<string, string[]> = {};
+    
+    // Initialize with a default key for OAuth
+    reposByInstallation['oauth'] = [];
+    
+    reposToAnalyze.forEach(repoFullName => {
+      const orgName = repoFullName.split('/')[0];
+      const installId = orgToInstallationMap.get(orgName);
+      
+      if (installId) {
+        // Use the installation ID as the key
+        const key = installId.toString();
+        if (!reposByInstallation[key]) {
+          reposByInstallation[key] = [];
+        }
+        reposByInstallation[key].push(repoFullName);
+      } else {
+        // No installation found for this org, use OAuth
+        reposByInstallation['oauth'].push(repoFullName);
+      }
+    });
+    
+    logger.debug(MODULE_NAME, "Grouped repositories by installation for fetching", {
+      installationGroups: Object.keys(reposByInstallation).length,
+      reposCounts: Object.fromEntries(
+        Object.entries(reposByInstallation).map(([key, repos]) => [key, repos.length])
+      )
+    });
+    
+    // Fetch commits from all installation groups in parallel
+    const commitFetchPromises = [];
+    
+    // For each installation ID group
+    for (const [key, repos] of Object.entries(reposByInstallation)) {
+      if (repos.length === 0) continue;
+      
+      if (key === 'oauth') {
+        // Fetch with OAuth if the user has an access token
+        if (session.accessToken) {
+          commitFetchPromises.push(
+            fetchCommitsForRepositories(
+              session.accessToken,
+              undefined, // No installation ID for OAuth
+              repos,
+              since,
+              until,
+              authorFilter
+            )
+          );
+        }
+      } else {
+        // Fetch with installation ID
+        const installId = parseInt(key, 10);
+        commitFetchPromises.push(
+          fetchCommitsForRepositories(
+            session.accessToken,
+            installId,
+            repos,
+            since,
+            until,
+            authorFilter
+          )
+        );
+      }
+    }
+    
+    // Wait for all commit fetching to complete
+    const commitResults = await Promise.all(commitFetchPromises);
+    
+    // Combine all commits
+    const commits = commitResults.flat();
     
     const commitFetchEndTime = Date.now();
     
@@ -523,10 +663,12 @@ export async function GET(request: NextRequest) {
       },
       groupedResults,
       // Authentication and installation info
-      authMethod: installationId ? "github_app" : "oauth",
-      installationId: installationId || null,
+      authMethod: installationIds.length > 0 ? "github_app" : "oauth",
+      installationIds: installationIds.length > 0 ? installationIds : null,
       installations: allInstallations,
-      currentInstallation: allInstallations.find(i => i.id === installationId)
+      currentInstallations: installationIds.length > 0 
+        ? allInstallations.filter(i => installationIds.includes(i.id))
+        : []
     });
   } catch (error) {
     logger.error(MODULE_NAME, "Error generating summary", { 
