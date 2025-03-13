@@ -1,4 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import Image from 'next/image';
+import AccountSelector, { Account } from './AccountSelector';
 
 type Contributor = {
   username: string;
@@ -50,15 +52,8 @@ export default function FilterPanel({
   const [groupBy, setGroupBy] = useState<'contributor' | 'organization' | 'repository' | 'chronological'>('chronological');
   const [generateGroupSummaries, setGenerateGroupSummaries] = useState(false);
 
-  // Fetch contributors when the component loads
-  useEffect(() => {
-    if (expanded && contributors.length === 0 && !loadingContributors) {
-      fetchContributors();
-    }
-  }, [expanded]);
-
-  // Fetch contributors from the API
-  async function fetchContributors() {
+  // Fetch contributors from the API - wrapped in useCallback to avoid dependency issues
+  const fetchContributors = useCallback(async () => {
     try {
       setLoadingContributors(true);
       // Convert installations to organization list
@@ -76,7 +71,14 @@ export default function FilterPanel({
     } finally {
       setLoadingContributors(false);
     }
-  }
+  }, [installations, setContributors, setLoadingContributors]);
+  
+  // Fetch contributors when the component loads
+  useEffect(() => {
+    if (expanded && contributors.length === 0 && !loadingContributors) {
+      fetchContributors();
+    }
+  }, [expanded, contributors.length, loadingContributors, fetchContributors]);
 
   // Apply filters when any filter changes
   useEffect(() => {
@@ -241,9 +243,11 @@ export default function FilterPanel({
                             style={{ color: 'var(--foreground)' }}
                           >
                             {contributor.avatarUrl && (
-                              <img 
+                              <Image 
                                 src={contributor.avatarUrl} 
                                 alt={contributor.displayName}
+                                width={20}
+                                height={20}
                                 className="w-5 h-5 rounded-full mr-2"
                               />
                             )}
@@ -272,58 +276,35 @@ export default function FilterPanel({
           
           {/* Organizations filter */}
           <div>
-            <h4 className="text-xs mb-2 font-bold" style={{ color: 'var(--electric-blue)' }}>ORGANIZATION FILTER</h4>
+            <h4 className="text-xs mb-2 font-bold" style={{ color: 'var(--electric-blue)' }}>ACCOUNT/ORGANIZATION FILTER</h4>
             <div className="space-y-2">
               {installations.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {installations.map(installation => (
-                    <div key={installation.id} className="flex items-center">
-                      <input 
-                        type="checkbox" 
-                        id={`org-${installation.account.login}`}
-                        checked={selectedOrganizations.includes(installation.account.login)}
-                        onChange={(e) => handleOrganizationChange(installation.account.login, e.target.checked)}
-                        disabled={isLoading}
-                        className="mr-2"
-                        style={{ 
-                          accentColor: 'var(--neon-green)'
-                        }}
-                      />
-                      <label 
-                        htmlFor={`org-${installation.account.login}`} 
-                        className="text-sm flex items-center"
-                        style={{ color: 'var(--foreground)' }}
-                      >
-                        {installation.account.avatarUrl && (
-                          <img 
-                            src={installation.account.avatarUrl} 
-                            alt={installation.account.login}
-                            className="w-5 h-5 rounded-full mr-2"
-                          />
-                        )}
-                        <span>{installation.account.login}</span>
-                        <span className="ml-2 text-xs px-1 rounded" style={{ 
-                          backgroundColor: 'rgba(0, 0, 0, 0.3)',
-                          color: installation.account.type === 'Organization' ? 'var(--neon-green)' : 'var(--luminous-yellow)'
-                        }}>
-                          {installation.account.type === 'Organization' ? 'ORG' : 'USER'}
-                        </span>
-                      </label>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <AccountSelector
+                    accounts={installations.map(installation => ({
+                      id: installation.id,
+                      login: installation.account.login,
+                      type: installation.account.type,
+                      avatarUrl: installation.account.avatarUrl
+                    }))}
+                    selectedAccounts={selectedOrganizations}
+                    onSelectionChange={setSelectedOrganizations}
+                    isLoading={isLoading}
+                    multiSelect={true}
+                    showCurrentLabel={true}
+                    currentUsername={currentUsername}
+                  />
+                  
+                  {/* Note about selection */}
+                  <div className="text-xs italic" style={{ color: 'var(--foreground)' }}>
+                    {selectedOrganizations.length === 0 ? 
+                      "No accounts selected. Select accounts to filter results or leave all unchecked to include all." :
+                      `Selected ${selectedOrganizations.length} account(s).`}
+                  </div>
+                </>
               ) : (
                 <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-                  No GitHub App installations found. Install the GitHub App to access more organizations.
-                </div>
-              )}
-              
-              {/* Note about empty selection */}
-              {installations.length > 0 && (
-                <div className="text-xs italic" style={{ color: 'var(--foreground)' }}>
-                  {selectedOrganizations.length === 0 ? 
-                    "No organizations selected. Select organizations to filter results or leave all unchecked to include all." :
-                    `Selected ${selectedOrganizations.length} organization(s).`}
+                  No GitHub App installations found. Install the GitHub App to access more accounts.
                 </div>
               )}
             </div>

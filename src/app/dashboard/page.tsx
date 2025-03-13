@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import FilterPanel, { FilterState } from '@/components/FilterPanel';
 import GroupedResultsView from '@/components/GroupedResultsView';
+import AccountSelector from '@/components/AccountSelector';
 import { getInstallationManagementUrl } from '@/lib/github';
 
 type Repository = {
@@ -138,7 +139,6 @@ export default function Dashboard() {
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [currentInstallation, setCurrentInstallation] = useState<Installation | null>(null);
-  const [showInstallationsDropdown, setShowInstallationsDropdown] = useState(false);
   
   // New state for filters
   const [activeFilters, setActiveFilters] = useState<FilterState>({
@@ -182,7 +182,7 @@ export default function Dashboard() {
         if (errorData.needsInstallation) {
           // GitHub App not installed
           handleAppInstallationNeeded();
-          return;
+          return false;
         }
         
         if (response.status === 401 || 
@@ -195,7 +195,7 @@ export default function Dashboard() {
                                errorData.error.includes('permissions')))) {
           // Auth error - token expired, invalid, or missing required scopes
           handleAuthError();
-          return;
+          return false;
         }
         
         throw new Error(errorData.error || 'Failed to fetch repositories');
@@ -229,9 +229,11 @@ export default function Dashboard() {
       }
       
       setError(null); // Clear any previous errors
+      return true;
     } catch (error) {
       console.error('Error fetching repositories:', error);
       setError('Failed to fetch repositories. Please try again.');
+      return false;
     } finally {
       setLoading(false);
     }
@@ -241,10 +243,29 @@ export default function Dashboard() {
   const switchInstallation = useCallback((installId: number) => {
     if (installId !== installationId) {
       console.log('Switching to installation ID:', installId);
-      fetchRepositories(installId);
+      // Get the selected installation's account login
+      const selectedInstallation = installations.find(inst => inst.id === installId);
+      
+      fetchRepositories(installId).then(success => {
+        // If we successfully switched, update the organization filter to match the selected installation
+        if (success && selectedInstallation) {
+          // Update the activeFilters to include the newly selected installation's account
+          setActiveFilters(prev => {
+            // If we're switching accounts, we probably want to filter by this account
+            // Add it to any existing organization filters
+            const newOrgs = [...prev.organizations];
+            if (!newOrgs.includes(selectedInstallation.account.login)) {
+              newOrgs.push(selectedInstallation.account.login);
+            }
+            return {
+              ...prev,
+              organizations: newOrgs
+            };
+          });
+        }
+      });
     }
-    setShowInstallationsDropdown(false);
-  }, [installationId, fetchRepositories]);
+  }, [installationId, fetchRepositories, installations, setActiveFilters]);
   
   // Function to check for installation changes when focus returns to the window
   // This helps refresh the UI when a user uninstalls the app via the GitHub settings page
@@ -254,7 +275,18 @@ export default function Dashboard() {
       if (session?.accessToken) {
         // Only if we have a session
         console.log('Window focused, refreshing installations');
-        fetchRepositories();
+        // Save current selections
+        const currentOrgSelections = activeFilters.organizations;
+        // After fetching, we'll sync the filter state with current selections
+        fetchRepositories().then(() => {
+          // If we had organizations selected in filters, preserve those selections
+          if (currentOrgSelections.length > 0) {
+            setActiveFilters(prev => ({
+              ...prev,
+              organizations: currentOrgSelections
+            }));
+          }
+        });
       }
     };
     
@@ -263,7 +295,7 @@ export default function Dashboard() {
     return () => {
       window.removeEventListener('focus', handleFocus);
     };
-  }, [session, fetchRepositories]);
+  }, [session, fetchRepositories, activeFilters.organizations, setActiveFilters]);
   
   // Redirect if not authenticated
   useEffect(() => {
@@ -656,75 +688,69 @@ export default function Dashboard() {
                   </div>
                   
                   <div className="flex space-x-2">
-                    {/* Installation selector dropdown */}
+                    {/* Installation selector using AccountSelector */}
                     {authMethod === 'github_app' && installations.length > 0 && (
-                      <div className="relative">
-                        <button
-                          onClick={() => setShowInstallationsDropdown(!showInstallationsDropdown)}
-                          className="text-xs px-2 py-1 rounded-md transition-all duration-200 flex items-center"
-                          style={{ 
-                            backgroundColor: 'var(--dark-slate)',
-                            color: 'var(--neon-green)',
-                            border: '1px solid var(--neon-green)'
+                      <div className="w-60">
+                        <AccountSelector
+                          accounts={installations.map(installation => ({
+                            id: installation.id,
+                            login: installation.account.login,
+                            type: installation.account.type,
+                            avatarUrl: installation.account.avatarUrl
+                          }))}
+                          selectedAccounts={currentInstallation ? [currentInstallation.account.login] : []}
+                          onSelectionChange={(selected) => {
+                            if (selected.length > 0) {
+                              const selectedInstall = installations.find(i => i.account.login === selected[0]);
+                              if (selectedInstall) {
+                                switchInstallation(selectedInstall.id);
+                              }
+                            }
                           }}
-                        >
-                          {currentInstallation?.account?.login || "SELECT ACCOUNT"}
-                          <svg className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </button>
-                        
-                        {showInstallationsDropdown && (
-                          <div className="absolute right-0 mt-1 w-60 rounded-md shadow-lg z-10" style={{ backgroundColor: 'var(--dark-slate)' }}>
-                            <div className="py-1 rounded-md border" style={{ borderColor: 'var(--neon-green)' }}>
-                              {installations.map(installation => (
-                                <div key={installation.id} className="relative">
-                                  <button
-                                    onClick={() => switchInstallation(installation.id)}
-                                    className="block w-full text-left px-3 py-2 text-xs transition-colors duration-150"
-                                    style={{ 
-                                      backgroundColor: installation.id === installationId 
-                                        ? 'rgba(0, 255, 135, 0.1)' 
-                                        : 'transparent',
-                                      color: 'var(--neon-green)'
-                                    }}
-                                  >
-                                    {installation.account.login}
-                                    {installation.account.type === 'Organization' && ' (Org)'}
-                                  </button>
-                                  
-                                  {/* Manage link */}
-                                  <a
-                                    href={getInstallationManagementUrl(installation.id, installation.account.login, installation.account.type)}
-                                    target="_blank" 
-                                    rel="noopener noreferrer"
-                                    className="absolute right-2 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[10px] rounded-sm"
-                                    style={{ 
-                                      backgroundColor: 'rgba(59, 142, 234, 0.1)',
-                                      color: 'var(--electric-blue)',
-                                      border: '1px solid var(--electric-blue)',
-                                      opacity: '0.8'
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    MANAGE
-                                  </a>
-                                </div>
-                              ))}
-                              
-                              {/* Add option to install on more accounts */}
-                              <div className="border-t my-1" style={{ borderColor: 'rgba(0, 255, 135, 0.2)' }}></div>
-                              <a
-                                href={getGitHubAppInstallUrl()}
-                                className="block w-full text-left px-3 py-2 text-xs"
-                                style={{ color: 'var(--electric-blue)' }}
-                              >
-                                + Install on another account
-                              </a>
-                            </div>
-                          </div>
-                        )}
+                          isLoading={loading}
+                          multiSelect={false}
+                          showCurrentLabel={false}
+                        />
                       </div>
+                    )}
+                    
+                    {/* Install More Accounts button */}
+                    {authMethod === 'github_app' && installations.length > 0 && (
+                      <a
+                        href={getGitHubAppInstallUrl()}
+                        className="text-xs px-2 py-1 rounded-md flex items-center"
+                        style={{ 
+                          backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                          color: 'var(--electric-blue)',
+                          border: '1px solid var(--electric-blue)'
+                        }}
+                      >
+                        <svg className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        ADD ACCOUNT
+                      </a>
+                    )}
+                    
+                    {/* Manage current installation */}
+                    {authMethod === 'github_app' && currentInstallation && (
+                      <a
+                        href={getInstallationManagementUrl(
+                          currentInstallation.id, 
+                          currentInstallation.account.login, 
+                          currentInstallation.account.type
+                        )}
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-xs px-2 py-1 rounded-md"
+                        style={{ 
+                          backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                          color: 'var(--neon-green)',
+                          border: '1px solid var(--neon-green)'
+                        }}
+                      >
+                        MANAGE
+                      </a>
                     )}
                     
                     {/* Install button for OAuth users */}
@@ -766,86 +792,87 @@ export default function Dashboard() {
               </div>
             )}
             
-            {/* Installation list panel for multiple accounts */}
+            {/* Consolidated Account Selection Panel */}
             {authMethod === 'github_app' && installations.length > 0 && (
               <div className="mb-6 p-3 rounded-md border" style={{
                 backgroundColor: 'rgba(0, 0, 0, 0.2)',
                 borderColor: 'var(--electric-blue)',
               }}>
-                <div className="flex items-center mb-2">
-                  <svg className="h-4 w-4 mr-2" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'var(--electric-blue)' }}>
-                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
-                  </svg>
-                  <span className="text-sm" style={{ color: 'var(--electric-blue)' }}>GITHUB APP INSTALLATIONS</span>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                  {installations.map(installation => (
-                    <div 
-                      key={installation.id}
-                      className="p-2 rounded-md border"
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center">
+                    <svg className="h-4 w-4 mr-2" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'var(--electric-blue)' }}>
+                      <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-sm" style={{ color: 'var(--electric-blue)' }}>AVAILABLE ACCOUNTS & ORGANIZATIONS</span>
+                  </div>
+                  
+                  <div className="flex space-x-2">
+                    <a
+                      href={getGitHubAppInstallUrl()}
+                      className="text-xs px-2 py-1 rounded-md flex items-center"
                       style={{ 
-                        backgroundColor: installation.id === installationId 
-                          ? 'rgba(0, 255, 135, 0.1)' 
-                          : 'rgba(0, 0, 0, 0.3)',
-                        borderColor: installation.id === installationId 
-                          ? 'var(--neon-green)' 
-                          : 'var(--electric-blue)',
+                        backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                        color: 'var(--electric-blue)',
+                        border: '1px solid var(--electric-blue)'
                       }}
                     >
-                      <div className="flex items-center cursor-pointer mb-2" onClick={() => switchInstallation(installation.id)}>
-                        <div className="flex-grow">
-                          <div className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>
-                            {installation.account.login}
-                          </div>
-                          <div className="text-xs" style={{ color: 'var(--electric-blue)' }}>
-                            {installation.account.type}
-                          </div>
-                        </div>
-                        {installation.id === installationId && (
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--neon-green)' }}></div>
+                      <svg className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      ADD ACCOUNT
+                    </a>
+                    
+                    {currentInstallation && (
+                      <a
+                        href={getInstallationManagementUrl(
+                          currentInstallation.id, 
+                          currentInstallation.account.login, 
+                          currentInstallation.account.type
                         )}
-                      </div>
-                      
-                      <div className="flex justify-between items-center mt-2">
-                        {/* Manage button */}
-                        <a
-                          href={getInstallationManagementUrl(
-                            installation.id, 
-                            installation.account.login, 
-                            installation.account.type
-                          )}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs px-2 py-1 rounded transition-colors"
-                          style={{ 
-                            backgroundColor: 'rgba(59, 142, 234, 0.1)',
-                            color: 'var(--electric-blue)',
-                            border: '1px solid var(--electric-blue)'
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          MANAGE
-                        </a>
-                      </div>
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-xs px-2 py-1 rounded-md"
+                        style={{ 
+                          backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                          color: 'var(--neon-green)',
+                          border: '1px solid var(--neon-green)'
+                        }}
+                      >
+                        MANAGE CURRENT
+                      </a>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="flex flex-col items-center">
+                  <div className="w-full max-w-xl">
+                    <div className="text-xs font-bold mb-2" style={{ color: 'var(--neon-green)' }}>ACTIVE ACCOUNT:</div>
+                    <AccountSelector
+                      accounts={installations.map(installation => ({
+                        id: installation.id,
+                        login: installation.account.login,
+                        type: installation.account.type,
+                        avatarUrl: installation.account.avatarUrl
+                      }))}
+                      selectedAccounts={currentInstallation ? [currentInstallation.account.login] : []}
+                      onSelectionChange={(selected) => {
+                        if (selected.length > 0) {
+                          const selectedInstall = installations.find(i => i.account.login === selected[0]);
+                          if (selectedInstall) {
+                            switchInstallation(selectedInstall.id);
+                          }
+                        }
+                      }}
+                      isLoading={loading}
+                      multiSelect={false}
+                      showCurrentLabel={true}
+                      currentUsername={session?.user?.name || ""}
+                    />
+                    
+                    <div className="mt-2 text-xs" style={{ color: 'var(--foreground)' }}>
+                      Select the account you want to analyze. This determines which repositories you&apos;ll have access to.
                     </div>
-                  ))}
-                  
-                  {/* Button to install on more accounts */}
-                  <a
-                    href={getGitHubAppInstallUrl()}
-                    className="p-2 rounded-md border flex items-center justify-center"
-                    style={{ 
-                      backgroundColor: 'rgba(0, 0, 0, 0.3)',
-                      borderColor: 'var(--electric-blue)',
-                      color: 'var(--electric-blue)',
-                    }}
-                  >
-                    <svg className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    <span className="text-sm">Install on Another Account</span>
-                  </a>
+                  </div>
                 </div>
               </div>
             )}
