@@ -4,10 +4,27 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import FilterPanel, { FilterState } from '@/components/FilterPanel';
-import GroupedResultsView from '@/components/GroupedResultsView';
+import ModeSelector, { ActivityMode } from '@/components/ModeSelector';
+import DateRangePicker, { DateRange } from '@/components/DateRangePicker';
+import OrganizationPicker from '@/components/OrganizationPicker';
 import AccountSelector from '@/components/AccountSelector';
+import ActivityFeed from '@/components/ActivityFeed';
 import { getInstallationManagementUrl } from '@/lib/github';
+import { createActivityFetcher } from '@/lib/activity';
+import { 
+  setCacheItem, 
+  getCacheItem,
+  getStaleItem,
+  ClientCacheTTL
+} from '@/lib/localStorageCache';
+
+// Preserve the FilterState type from the removed FilterPanel
+export type FilterState = {
+  contributors: string[];
+  organizations: string[];
+  repositories: string[];
+  // Removed groupBy, standardized on chronological view
+};
 
 type Repository = {
   id: number;
@@ -55,21 +72,11 @@ type CommitSummary = {
     organizations: string[] | null;
     repositories: string[] | null;
     dateRange: { since: string, until: string };
-    groupBy: string;
   };
-  groupedResults?: GroupedResult[];
+  // Removed groupedResults field since we're standardizing on chronological view
 };
 
-type GroupedResult = {
-  groupKey: string;
-  groupName: string;
-  groupAvatar?: string;
-  commitCount: number;
-  repositories: string[];
-  dates: string[];
-  commits: any[];
-  aiSummary?: any;
-};
+// Removed GroupedResult type - no longer needed with chronological view only
 
 type InstallationAccount = {
   login: string;
@@ -142,17 +149,15 @@ export default function Dashboard() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [currentInstallations, setCurrentInstallations] = useState<Installation[]>([]);
   
-  // New state for filters
+  // Activity mode state
+  const [activityMode, setActivityMode] = useState<ActivityMode>('my-activity');
+  
+  // New state for filters (removed groupBy, standardized on chronological view)
   const [activeFilters, setActiveFilters] = useState<FilterState>({
     contributors: [],
     organizations: [],
-    repositories: [],
-    groupBy: 'chronological',
-    generateGroupSummaries: false
+    repositories: []
   });
-  
-  // State to track expanded groups in the grouped results view
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   
   // Handle repository fetch errors - set descriptive error message
   const handleAuthError = useCallback(() => {
@@ -167,8 +172,37 @@ export default function Dashboard() {
   }, [setError, setNeedsInstallation]);
   
   const fetchRepositories = useCallback(async (selectedInstallationId?: number) => {
+    // Create a consistent cache key
+    const cacheKey = `repos:${session?.user?.email || 'user'}`;
+    let forceFetch = false;
+    
+    // If we already have repositories from a previous session, maintain them while fetching fresh data
+    if (!forceFetch && !selectedInstallationId) {
+      // Check for cached data using stale-while-revalidate approach
+      const { data: cachedRepos, isStale } = getStaleItem<Repository[]>(cacheKey);
+      
+      // If we have cached data, use it immediately
+      if (cachedRepos && cachedRepos.length > 0) {
+        setRepositories(cachedRepos);
+        console.log('Using cached repositories:', cachedRepos.length);
+        
+        // If data is fresh enough, don't fetch
+        if (!isStale) {
+          console.log('Cache is fresh, skipping fetch');
+          return true;
+        }
+        
+        // If data is stale, continue with fetch in background but don't show loading state
+        console.log('Cache is stale, fetching in background');
+        forceFetch = true;
+      }
+    }
+    
     try {
-      setLoading(true);
+      // Only show loading if we don't have cached data
+      if (!forceFetch) {
+        setLoading(true);
+      }
       
       // Add installation_id query parameter if it was provided
       const url = selectedInstallationId 
@@ -204,6 +238,12 @@ export default function Dashboard() {
       }
       
       const data: ReposResponse = await response.json();
+      
+      // Cache the repositories for future use with 1 hour TTL
+      if (data.repositories && data.repositories.length > 0) {
+        setCacheItem(cacheKey, data.repositories, ClientCacheTTL.LONG);
+      }
+      
       setRepositories(data.repositories);
       
       // Update auth method and installation ID if available
@@ -223,6 +263,9 @@ export default function Dashboard() {
       if (data.installations && data.installations.length > 0) {
         setInstallations(data.installations);
         console.log('Available installations:', data.installations.length);
+        
+        // Cache installations with a longer TTL
+        setCacheItem('installations', data.installations, ClientCacheTTL.LONG);
       }
       
       // Update current installations
@@ -237,6 +280,9 @@ export default function Dashboard() {
           return prev;
         });
         console.log('Current installation:', data.currentInstallation.account.login);
+        
+        // Cache current installations
+        setCacheItem('currentInstallations', data.currentInstallations || [data.currentInstallation], ClientCacheTTL.LONG);
       }
       
       setError(null); // Clear any previous errors
@@ -246,9 +292,11 @@ export default function Dashboard() {
       setError('Failed to fetch repositories. Please try again.');
       return false;
     } finally {
-      setLoading(false);
+      if (!forceFetch) {
+        setLoading(false);
+      }
     }
-  }, [handleAuthError, handleAppInstallationNeeded, setRepositories, setError, setLoading, setAuthMethod, setInstallationIds, setInstallations, setCurrentInstallations]);
+  }, [handleAuthError, handleAppInstallationNeeded, setRepositories, setError, setLoading, setAuthMethod, setInstallationIds, setInstallations, setCurrentInstallations, session]);
   
   // Function to handle switching installations
   const switchInstallations = useCallback((installIds: number[]) => {
@@ -314,17 +362,34 @@ export default function Dashboard() {
     // Don't refresh if we have no session
     if (!session?.accessToken) return false;
     
-    // Don't refresh if we already have repositories and it hasn't been long since last refresh
+    // Check if we have cached repository data
+    const cacheKey = `repos:${session.user?.email || 'user'}`;
+    
+    // Get stale data if available - stale data is invalid but usable while we refresh
+    const { data: cachedData, isStale } = getStaleItem<Repository[]>(cacheKey);
+    
+    // If we have cached data but it's stale, allow a refresh
+    if (cachedData && isStale) {
+      return true;
+    }
+    
+    // If we have valid cached data, don't refresh
+    if (cachedData) {
+      return false;
+    }
+    
+    // If we have no cached data but have repositories in state, use legacy check
     if (repositories.length > 0) {
       const lastRefreshTime = localStorage.getItem('lastRepositoryRefresh');
       if (lastRefreshTime) {
-        // Only refresh if it's been more than 5 minutes since last refresh
-        const fiveMinutes = 5 * 60 * 1000;
+        // Use longer TTL - 1 hour for repository data
+        const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
         const timeSinceLastRefresh = Date.now() - parseInt(lastRefreshTime, 10);
-        return timeSinceLastRefresh > fiveMinutes;
+        return timeSinceLastRefresh > oneHour;
       }
     }
     
+    // No cache, no repositories - must refresh
     return true;
   }, [session, repositories.length]);
   
@@ -409,19 +474,50 @@ export default function Dashboard() {
     }
   }, [session, fetchRepositories]);
 
-  // Function to handle filter changes
+  // Function to handle mode changes
+  const handleModeChange = useCallback((mode: ActivityMode) => {
+    setActivityMode(mode);
+    
+    // Update the filter state based on the selected mode
+    setActiveFilters(prev => {
+      const newFilters = { ...prev };
+      
+      // Clear contributors when switching modes
+      if (mode === 'my-activity') {
+        newFilters.contributors = ['me']; // Set to current user only
+        newFilters.organizations = []; // Clear organization filter
+      } else if (mode === 'my-work-activity') {
+        newFilters.contributors = ['me']; // Set to current user only
+      } else if (mode === 'team-activity') {
+        newFilters.contributors = []; // Clear contributor filter to show all team members
+      }
+      
+      return newFilters;
+    });
+    
+    console.log('Activity mode updated:', mode);
+  }, []);
+  
+  // Function to handle date range changes
+  const handleDateRangeChange = useCallback((newDateRange: DateRange) => {
+    setDateRange(newDateRange);
+  }, []);
+  
+  // Function to handle organization selection changes
+  const handleOrganizationChange = useCallback((selectedOrgs: string[]) => {
+    setActiveFilters(prev => ({
+      ...prev,
+      organizations: selectedOrgs
+    }));
+  }, []);
+  
+  // Function to handle legacy filter changes (for backward compatibility)
   const handleFilterChange = useCallback((newFilters: FilterState) => {
     setActiveFilters(newFilters);
     console.log('Filters updated:', newFilters);
   }, []);
   
-  // Toggle expanded state for grouped results
-  const toggleGroupExpanded = useCallback((groupKey: string) => {
-    setExpandedGroups(prev => ({
-      ...prev,
-      [groupKey]: !prev[groupKey]
-    }));
-  }, []);
+  // Removed toggleGroupExpanded function - no longer needed with chronological view only
 
   async function generateSummary(e: React.FormEvent) {
     e.preventDefault();
@@ -430,9 +526,6 @@ export default function Dashboard() {
       setError(null);
       setSummary(null);
       
-      // Reset expanded groups state when generating a new summary
-      setExpandedGroups({});
-
       // Construct query parameters
       const params = new URLSearchParams({
         since: dateRange.since,
@@ -457,12 +550,8 @@ export default function Dashboard() {
         params.append('repositories', activeFilters.repositories.join(','));
       }
       
-      // Add grouping parameters
-      params.append('groupBy', activeFilters.groupBy);
-      
-      if (activeFilters.generateGroupSummaries) {
-        params.append('generateGroupSummaries', 'true');
-      }
+      // Always use chronological view
+      params.append('groupBy', 'chronological');
 
       const response = await fetch(`/api/summary?${params.toString()}`);
       if (!response.ok) {
@@ -488,16 +577,6 @@ export default function Dashboard() {
 
       const data = await response.json();
       setSummary(data);
-      
-      // Initialize expanded state for first few groups
-      if (data.groupedResults && data.groupedResults.length > 0) {
-        const initialExpandedState: Record<string, boolean> = {};
-        // Expand the first 3 groups by default
-        data.groupedResults.slice(0, 3).forEach((group: GroupedResult) => {
-          initialExpandedState[group.groupKey] = true;
-        });
-        setExpandedGroups(initialExpandedState);
-      }
       
       // Update auth method and installation IDs if available
       if (data.authMethod) {
@@ -970,82 +1049,130 @@ export default function Dashboard() {
               </div>
             )}
             
-            {/* Filter Panel Component */}
-            <FilterPanel 
-              onFilterChange={handleFilterChange}
-              isLoading={loading}
-              installations={installations}
-              currentUsername={session?.user?.name || undefined}
-            />
-
-            <form onSubmit={generateSummary} className="space-y-8">
-              {/* Date range controls with cyberpunk styling */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label
-                    htmlFor="since"
-                    className="block text-sm mb-2"
-                    style={{ color: 'var(--electric-blue)' }}
-                  >
-                    DATA RANGE: START DATE
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: 'var(--electric-blue)' }}></div>
-                    <input
-                      type="date"
-                      id="since"
-                      value={dateRange.since}
-                      onChange={(e) =>
-                        setDateRange((prev) => ({ ...prev, since: e.target.value }))
-                      }
-                      className="block w-full pl-3 py-2 pr-3 rounded-md focus:outline-none"
-                      style={{ 
-                        backgroundColor: 'rgba(0, 0, 0, 0.3)',
-                        borderLeft: 'none',
-                        borderTop: '1px solid var(--electric-blue)',
-                        borderRight: '1px solid var(--electric-blue)',
-                        borderBottom: '1px solid var(--electric-blue)',
-                        color: 'var(--foreground)',
-                        paddingLeft: '12px'
-                      }}
-                      required
-                    />
-                  </div>
+            {/* Improved Filters Container */}
+            <div className="mb-8 border rounded-lg p-6" style={{ 
+              backgroundColor: 'rgba(27, 43, 52, 0.8)',
+              backdropFilter: 'blur(5px)',
+              borderColor: 'var(--electric-blue)',
+              boxShadow: '0 0 15px rgba(59, 142, 234, 0.15)'
+            }}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center">
+                  <div className="w-2 h-2 rounded-full mr-2" style={{ backgroundColor: 'var(--electric-blue)' }}></div>
+                  <h3 className="text-sm font-bold uppercase" style={{ color: 'var(--electric-blue)' }}>
+                    ANALYSIS FILTERS
+                  </h3>
                 </div>
-
-                <div>
-                  <label
-                    htmlFor="until"
-                    className="block text-sm mb-2"
-                    style={{ color: 'var(--electric-blue)' }}
-                  >
-                    DATA RANGE: END DATE
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: 'var(--electric-blue)' }}></div>
-                    <input
-                      type="date"
-                      id="until"
-                      value={dateRange.until}
-                      onChange={(e) =>
-                        setDateRange((prev) => ({ ...prev, until: e.target.value }))
-                      }
-                      className="block w-full pl-3 py-2 pr-3 rounded-md focus:outline-none"
-                      style={{ 
-                        backgroundColor: 'rgba(0, 0, 0, 0.3)',
-                        borderLeft: 'none',
-                        borderTop: '1px solid var(--electric-blue)',
-                        borderRight: '1px solid var(--electric-blue)',
-                        borderBottom: '1px solid var(--electric-blue)',
-                        color: 'var(--foreground)',
-                        paddingLeft: '12px'
-                      }}
-                      required
-                    />
-                  </div>
+                <div className="px-2 py-1 text-xs rounded flex items-center" style={{ 
+                  backgroundColor: 'rgba(0, 0, 0, 0.3)', 
+                  border: '1px solid var(--electric-blue)',
+                  color: 'var(--electric-blue)'
+                }}>
+                  <span>CONFIGURE PARAMETERS</span>
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Left column - Mode and Organizations (when visible) */}
+                <div className="space-y-6">
+                  <ModeSelector
+                    selectedMode={activityMode}
+                    onChange={handleModeChange}
+                    disabled={loading}
+                  />
+                  
+                  {/* OrganizationPicker conditionally shown based on mode */}
+                  {(activityMode === 'my-work-activity' || activityMode === 'team-activity') && (
+                    <div className="flex items-center justify-center w-full">
+                      <div className="w-full max-w-xl">
+                        <OrganizationPicker
+                          organizations={installations.map(installation => ({
+                            id: installation.id,
+                            login: installation.account.login,
+                            type: installation.account.type,
+                            avatarUrl: installation.account.avatarUrl
+                          }))}
+                          selectedOrganizations={activeFilters.organizations}
+                          onSelectionChange={handleOrganizationChange}
+                          mode={activityMode}
+                          disabled={loading}
+                          isLoading={loading}
+                          currentUsername={session?.user?.name || undefined}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Right column - Date and Analysis Info */}
+                <div className="space-y-6">
+                  <DateRangePicker
+                    dateRange={dateRange}
+                    onChange={handleDateRangeChange}
+                    disabled={loading}
+                  />
+                  
+                  {/* Analysis Parameters Info Card */}
+                  <div className="rounded-lg border bg-opacity-70 p-4" style={{ 
+                    backgroundColor: 'rgba(27, 43, 52, 0.7)',
+                    backdropFilter: 'blur(5px)',
+                    borderColor: 'var(--neon-green)',
+                  }}>
+                    <div className="flex items-center mb-3">
+                      <div className="w-2 h-2 rounded-full mr-2" style={{ backgroundColor: 'var(--neon-green)' }}></div>
+                      <h3 className="text-sm uppercase" style={{ color: 'var(--neon-green)' }}>
+                        ANALYSIS PARAMETERS
+                      </h3>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs" style={{ color: 'var(--electric-blue)' }}>MODE</span>
+                        <span className="text-xs px-2 py-1 rounded" style={{ 
+                          backgroundColor: 'rgba(0, 255, 135, 0.1)',
+                          color: 'var(--neon-green)'
+                        }}>
+                          {activityMode === 'my-activity' ? 'MY ACTIVITY' : 
+                           activityMode === 'my-work-activity' ? 'MY WORK ACTIVITY' : 
+                           'TEAM ACTIVITY'}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs" style={{ color: 'var(--electric-blue)' }}>DATE RANGE</span>
+                        <span className="text-xs px-2 py-1 rounded" style={{ 
+                          backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                          color: 'var(--electric-blue)'
+                        }}>
+                          {dateRange.since} to {dateRange.until}
+                        </span>
+                      </div>
+                      
+                      {activeFilters.organizations.length > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs" style={{ color: 'var(--electric-blue)' }}>ORGANIZATIONS</span>
+                          <span className="text-xs px-2 py-1 rounded" style={{ 
+                            backgroundColor: 'rgba(59, 142, 234, 0.1)',
+                            color: 'var(--electric-blue)'
+                          }}>
+                            {activeFilters.organizations.length} SELECTED
+                          </span>
+                        </div>
+                      )}
+                      
+                      <div className="mt-3 pt-3 border-t" style={{ borderColor: 'rgba(0, 255, 135, 0.2)' }}>
+                        <div className="text-xs" style={{ color: 'var(--foreground)' }}>
+                          Configure your analysis parameters above, then click the Analyze Commits button below to generate insights.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Wrap the entire content below in a form */}
+            <form onSubmit={generateSummary} className="space-y-8">
               {/* Repository information panel with cyber styling */}
               <div className="mt-6">
                 <div className="flex items-center justify-between mb-3">
@@ -1101,8 +1228,7 @@ export default function Dashboard() {
                         {/* Display filter information if applied */}
                         {(activeFilters.contributors.length > 0 || 
                           activeFilters.organizations.length > 0 || 
-                          activeFilters.repositories.length > 0 || 
-                          activeFilters.groupBy !== 'chronological') && (
+                          activeFilters.repositories.length > 0) && (
                           <div className="mt-2 p-2 border rounded" style={{ 
                             borderColor: 'rgba(0, 255, 135, 0.2)',
                             backgroundColor: 'rgba(0, 0, 0, 0.2)'
@@ -1127,14 +1253,7 @@ export default function Dashboard() {
                                   Orgs: {activeFilters.organizations.join(', ')}
                                 </span>
                               )}
-                              {activeFilters.groupBy !== 'chronological' && (
-                                <span className="text-xs px-2 py-0.5 rounded" style={{ 
-                                  backgroundColor: 'rgba(255, 200, 87, 0.1)',
-                                  color: 'var(--foreground)'
-                                }}>
-                                  Group by: {activeFilters.groupBy}
-                                </span>
-                              )}
+                              {/* Group by section removed, always using chronological view */}
                             </div>
                           </div>
                         )}
@@ -1244,6 +1363,7 @@ export default function Dashboard() {
                 <button
                   type="submit"
                   disabled={loading}
+                  title="Analyze your GitHub commits and generate activity summary with AI insights"
                   className="px-5 py-2 rounded-md text-sm font-medium transition-all duration-200 flex items-center"
                   style={{ 
                     backgroundColor: loading ? 'rgba(0, 0, 0, 0.3)' : 'var(--dark-slate)',
@@ -1276,7 +1396,10 @@ export default function Dashboard() {
                     </>
                   ) : (
                     <>
-                      GENERATE SUMMARY
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11 4a1 1 0 10-2 0v4a1 1 0 102 0V7zm-3 1a1 1 0 10-2 0v3a1 1 0 102 0V8zM8 9a1 1 0 00-2 0v2a1 1 0 102 0V9z" clipRule="evenodd" />
+                      </svg>
+                      ANALYZE COMMITS
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-2" viewBox="0 0 20 20" fill="currentColor">
                         <path fillRule="evenodd" d="M10.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L12.586 11H5a1 1 0 110-2h7.586l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
                       </svg>
@@ -1312,14 +1435,52 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Grouped Results View (if using grouping) */}
-              {summary.groupedResults && summary.filterInfo?.groupBy !== 'chronological' && (
+              {/* Activity Feed with Progressive Loading */}
+              {summary.commits && (
                 <div className="mb-8">
-                  <GroupedResultsView 
-                    groupedResults={summary.groupedResults}
-                    groupBy={summary.filterInfo?.groupBy as any || 'chronological'}
-                    expanded={expandedGroups}
-                    onToggleExpand={toggleGroupExpanded}
+                  <div className="flex items-center mb-3">
+                    <div className="w-2 h-2 rounded-full mr-2" style={{ backgroundColor: 'var(--electric-blue)' }}></div>
+                    <h3 className="text-sm uppercase" style={{ color: 'var(--electric-blue)' }}>
+                      COMMIT ACTIVITY
+                    </h3>
+                  </div>
+                  
+                  <ActivityFeed
+                    loadCommits={(cursor, limit) => {
+                      // Build appropriate parameters based on current mode
+                      const params: Record<string, string> = {
+                        since: dateRange.since,
+                        until: dateRange.until
+                      };
+                      
+                      // Add organization filter if applicable
+                      if (activeFilters.organizations.length > 0) {
+                        params.organizations = activeFilters.organizations.join(',');
+                      }
+                      
+                      // If installation IDs available, include them
+                      if (installationIds.length > 0) {
+                        params.installation_ids = installationIds.join(',');
+                      }
+                      
+                      // Determine which API endpoint to use based on the current mode
+                      let apiEndpoint = '/api/my-activity';
+                      
+                      if (activityMode === 'my-work-activity') {
+                        apiEndpoint = '/api/my-org-activity';
+                      } else if (activityMode === 'team-activity') {
+                        apiEndpoint = '/api/team-activity';
+                      }
+                      
+                      // Create and return the fetcher
+                      return createActivityFetcher(apiEndpoint, params)(cursor, limit);
+                    }}
+                    useInfiniteScroll={true}
+                    initialLimit={30}
+                    additionalItemsPerPage={20}
+                    showRepository={true}
+                    showContributor={activityMode === 'team-activity'}
+                    emptyMessage={`No ${activityMode.replace('-', ' ')} data found for the selected filters.`}
                   />
                 </div>
               )}
