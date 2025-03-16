@@ -70,8 +70,8 @@ export async function generateCommitSummary(
   logger.debug(MODULE_NAME, "Preparing commit data for analysis");
   const commitData = commits.map(commit => ({
     message: commit.commit.message,
-    date: commit.commit.author.date,
-    author: commit.commit.author.name,
+    date: commit.commit.author?.date || 'unknown',
+    author: commit.commit.author?.name || 'unknown',
     repository: commit.repository?.full_name || 'unknown',
     url: commit.html_url,
   }));
@@ -79,14 +79,18 @@ export async function generateCommitSummary(
   logger.debug(MODULE_NAME, "Commit data prepared", { 
     sampleCommit: commits.length > 0 ? {
       message: commits[0].commit.message.substring(0, 100),
-      date: commits[0].commit.author.date,
+      date: commits[0].commit.author?.date || 'unknown',
       repo: commits[0].repository?.full_name
     } : null,
     uniqueRepos: Array.from(new Set(commits.map(c => c.repository?.full_name))).length,
-    uniqueAuthors: Array.from(new Set(commits.map(c => c.commit.author.name))).length,
+    uniqueAuthors: Array.from(new Set(commits.map(c => c.commit.author?.name || 'unknown'))).length,
     dateRange: commits.length > 0 ? {
-      earliest: new Date(commits[commits.length-1].commit.author.date).toISOString(),
-      latest: new Date(commits[0].commit.author.date).toISOString()
+      earliest: commits[commits.length-1]?.commit?.author?.date ? 
+        new Date(commits[commits.length-1]?.commit?.author?.date as string).toISOString() : 
+        'unknown',
+      latest: commits[0]?.commit?.author?.date ? 
+        new Date(commits[0]?.commit?.author?.date as string).toISOString() : 
+        'unknown'
     } : null
   });
 

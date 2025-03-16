@@ -1,4 +1,5 @@
 import React from 'react';
+import Image from 'next/image';
 
 type GroupedResult = {
   groupKey: string;
@@ -70,10 +71,12 @@ export default function GroupedResultsView({
             }}>
               <div className="flex items-center">
                 {group.groupAvatar && (
-                  <img 
+                  <Image 
                     src={group.groupAvatar}
                     alt={group.groupName}
-                    className="w-8 h-8 rounded-full mr-3"
+                    width={32}
+                    height={32}
+                    className="rounded-full mr-3"
                   />
                 )}
                 <div>

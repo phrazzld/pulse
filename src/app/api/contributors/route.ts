@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
-import { fetchAllRepositories, fetchCommitsForRepositories } from "@/lib/github";
+import { fetchAllRepositories, fetchCommitsForRepositories, Commit } from "@/lib/github";
 import { logger } from "@/lib/logger";
+import { generateETag, isCacheValid, notModifiedResponse, cachedJsonResponse, CacheTTL, generateCacheControl } from "@/lib/cache";
 
 const MODULE_NAME = "api:contributors";
 
-type Contributor = {
+// Define a more optimized contributor type
+type OptimizedContributor = {
   username: string;
   displayName: string;
-  email: string | null;
   avatarUrl: string | null;
   commitCount?: number;
 };
@@ -17,7 +18,7 @@ type Contributor = {
 export async function GET(request: NextRequest) {
   logger.debug(MODULE_NAME, "GET /api/contributors request received", { 
     url: request.url,
-    headers: Object.fromEntries(request.headers)
+    headers: Object.fromEntries([...request.headers.entries()])
   });
   
   const session = await getServerSession(authOptions);
@@ -51,6 +52,36 @@ export async function GET(request: NextRequest) {
   const since = request.nextUrl.searchParams.get('since') || '';
   const until = request.nextUrl.searchParams.get('until') || '';
   
+  // Create cache key based on query parameters and user
+  const cacheKey = {
+    user: session.user?.email || 'unknown',
+    installationId: installationId || 'oauth',
+    organizations,
+    repositories: repositoryFilters,
+    since,
+    until,
+    includeCommitCount: request.nextUrl.searchParams.get('include_commit_count') === 'true',
+    // Add a timestamp that changes every 15 minutes for semi-frequently changing data
+    timestamp: Math.floor(Date.now() / (CacheTTL.MEDIUM * 1000))
+  };
+  
+  const etag = generateETag(cacheKey);
+  
+  // Check if client has valid cached data
+  if (isCacheValid(request, etag)) {
+    logger.info(MODULE_NAME, "Returning 304 Not Modified - client has current contributor data", {
+      etag,
+      filters: {
+        organizations: organizations.length,
+        repositories: repositoryFilters.length,
+        since,
+        until
+      }
+    });
+    
+    return notModifiedResponse(etag, generateCacheControl(CacheTTL.MEDIUM, CacheTTL.MEDIUM * 2));
+  }
+  
   logger.info(MODULE_NAME, "Fetching contributors with filters", {
     hasInstallationId: !!installationId,
     hasAccessToken: !!session.accessToken,
@@ -68,14 +99,14 @@ export async function GET(request: NextRequest) {
     
     if (organizations.length > 0) {
       filteredRepos = filteredRepos.filter(repo => {
-        const orgName = repo.full_name.split('/')[0];
-        return organizations.includes(orgName);
+        const orgName = repo.full_name.split('/')[0].toLowerCase();
+        return organizations.some(org => org.toLowerCase() === orgName);
       });
     }
     
     if (repositoryFilters.length > 0) {
       filteredRepos = filteredRepos.filter(repo => 
-        repositoryFilters.includes(repo.full_name)
+        repositoryFilters.some(filter => filter.toLowerCase() === repo.full_name.toLowerCase())
       );
     }
     
@@ -84,7 +115,7 @@ export async function GET(request: NextRequest) {
     // Determine if we need to fetch commits for accurate contributor information
     const needCommits = since || until || request.nextUrl.searchParams.get('include_commit_count') === 'true';
     
-    let commits = [];
+    let commits: Commit[] = [];
     if (needCommits && repoNames.length > 0) {
       commits = await fetchCommitsForRepositories(
         session.accessToken,
@@ -96,7 +127,7 @@ export async function GET(request: NextRequest) {
     }
     
     // Extract unique contributors
-    const contributorsMap = new Map<string, Contributor>();
+    const contributorsMap = new Map<string, OptimizedContributor>();
     
     if (needCommits && commits.length > 0) {
       // Extract from commits if we have them
@@ -105,7 +136,6 @@ export async function GET(request: NextRequest) {
         
         const username = commit.author.login;
         const displayName = commit.commit.author?.name || username;
-        const email = commit.commit.author?.email || null;
         const avatarUrl = commit.author.avatar_url || null;
         
         if (contributorsMap.has(username)) {
@@ -115,11 +145,10 @@ export async function GET(request: NextRequest) {
             existing.commitCount = (existing.commitCount || 0) + 1;
           }
         } else {
-          // Add new contributor
+          // Add new contributor - omit email for privacy/optimization
           contributorsMap.set(username, {
             username,
             displayName,
-            email,
             avatarUrl,
             commitCount: 1
           });
@@ -150,7 +179,6 @@ export async function GET(request: NextRequest) {
             
             const username = commit.author.login;
             const displayName = commit.commit.author?.name || username;
-            const email = commit.commit.author?.email || null;
             const avatarUrl = commit.author.avatar_url || null;
             
             if (contributorsMap.has(username)) {
@@ -164,7 +192,6 @@ export async function GET(request: NextRequest) {
               contributorsMap.set(username, {
                 username,
                 displayName,
-                email,
                 avatarUrl,
                 commitCount: 1
               });
@@ -200,25 +227,31 @@ export async function GET(request: NextRequest) {
       totalCommits: commits.length
     });
     
-    return NextResponse.json({
+    // Create response data
+    const responseData = {
       contributors,
       filterInfo: {
         organizations: organizations.length > 0 ? organizations : null,
         repositories: repositoryFilters.length > 0 ? repositoryFilters : null,
         dateRange: since || until ? { since, until } : null
       }
+    };
+    
+    // Return cached JSON response with appropriate headers
+    return cachedJsonResponse(responseData, 200, {
+      etag,
+      maxAge: CacheTTL.MEDIUM, // Cache for 15 minutes
+      staleWhileRevalidate: CacheTTL.MEDIUM * 2 // Allow stale content for 30 minutes while revalidating
     });
+    
   } catch (error) {
     logger.error(MODULE_NAME, "Error fetching contributors", { error });
     
-    return new NextResponse(JSON.stringify({ 
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    return cachedJsonResponse({ 
       error: "Failed to fetch contributors",
-      details: error.message
-    }), {
-      status: 500,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+      details: errorMessage
+    }, 500);
   }
 }
