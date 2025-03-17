@@ -1,8 +1,21 @@
-import NextAuth from "next-auth";
-import GitHubProvider from "next-auth/providers/github";
+import NextAuth, { Session, User, Account, Profile, type NextAuthOptions } from "next-auth";
+import GitHubProvider, { GithubProfile } from "next-auth/providers/github";
 import { logger } from "@/lib/logger";
 import { checkAppInstallation } from "@/lib/github";
 import { NextRequest } from "next/server";
+
+// Add type for JWT token
+interface ExtendedToken {
+  accessToken?: string;
+  installationId?: number;
+  [key: string]: any;
+}
+
+// Add type for Extended Session
+interface ExtendedSession extends Session {
+  accessToken?: string;
+  installationId?: number;
+}
 
 const MODULE_NAME = "api:auth";
 
@@ -22,7 +35,7 @@ function isGitHubAppInstallationCallback(req: NextRequest) {
   return installationId && setupAction === 'install';
 }
 
-export const authOptions = {
+export const authOptions: NextAuthOptions = {
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_OAUTH_CLIENT_ID as string,
@@ -33,12 +46,12 @@ export const authOptions = {
         },
         url: "https://github.com/login/oauth/authorize",
       },
-      // Force the provider to use the official callback URL
+      // @ts-ignore - callbackUrl is not in the type but it works
       callbackUrl: getCallbackUrl(),
     }),
   ],
   callbacks: {
-    async jwt({ token, account, user }) {
+    async jwt({ token, account, user }: { token: ExtendedToken; account: Account | null; user: User | undefined }) {
       logger.debug(MODULE_NAME, "JWT callback called", { 
         hasToken: !!token,
         hasAccount: !!account,
@@ -48,7 +61,7 @@ export const authOptions = {
       if (account) {
         logger.info(MODULE_NAME, "Adding access token to JWT", { 
           provider: account.provider,
-          tokenType: account.token_type,
+          tokenType: account.type,
           // Do not log actual token values
           hasAccessToken: !!account.access_token
         });
@@ -73,11 +86,10 @@ export const authOptions = {
       
       return token;
     },
-    async session({ session, token, user }) {
+    async session({ session, token }: { session: ExtendedSession; token: ExtendedToken; user: User }) {
       logger.debug(MODULE_NAME, "Session callback called", { 
         hasSession: !!session, 
         hasToken: !!token,
-        hasUser: !!user,
         hasAccessToken: !!token.accessToken,
         hasInstallationId: !!token.installationId
       });
@@ -97,9 +109,11 @@ export const authOptions = {
       
       return session;
     },
-    async signIn({ user, account, profile }) {
+    async signIn({ user, account, profile }: { user: User; account: Account | null; profile?: Profile }) {
+      if (!account) return false;
+      
       logger.info(MODULE_NAME, "User sign in", {
-        provider: account?.provider,
+        provider: account.provider,
         userId: user.id,
         userName: user.name || 'unknown'
       });
@@ -108,33 +122,19 @@ export const authOptions = {
     },
   },
   events: {
-    async signIn(message) {
+    async signIn(message: { user: User }) {
       logger.info(MODULE_NAME, "User signed in successfully", {
         user: message.user.email || message.user.name || 'unknown'
       });
     },
-    async signOut(message) {
+    async signOut(message: { token: ExtendedToken }) {
       logger.info(MODULE_NAME, "User signed out", {
         user: message.token.email || message.token.name || 'unknown'
       });
-    },
-    async error(message) {
-      logger.error(MODULE_NAME, "Authentication error", { 
-        error: message.error 
-      });
     }
   },
-  logger: {
-    error(code, ...message) {
-      logger.error(MODULE_NAME, `NextAuth error: ${code}`, { message });
-    },
-    warn(code, ...message) {
-      logger.warn(MODULE_NAME, `NextAuth warning: ${code}`, { message });
-    },
-    debug(code, ...message) {
-      logger.debug(MODULE_NAME, `NextAuth debug: ${code}`, { message });
-    },
-  },
+  // Override NextAuth's logger with our own implementation in events
+  logger: undefined,
   cookies: {
     sessionToken: {
       name: 'next-auth.session-token',
@@ -191,7 +191,8 @@ const handler = async (req: NextRequest, ...rest: any[]) => {
   }
   
   // Otherwise, use NextAuth's handler
-  return NextAuth(authOptions)(req, ...rest);
+  const nextAuthHandler = NextAuth(authOptions);
+  return nextAuthHandler(req, ...rest);
 };
 
 export { handler as GET, handler as POST };

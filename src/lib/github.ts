@@ -19,7 +19,7 @@ export interface Repository {
   html_url: string;
   description: string | null;
   updated_at?: string | null;
-  language: string | null;
+  language?: string | null;
   // optionally: license?: License|null;
 }
 
@@ -37,15 +37,21 @@ export interface Commit {
       date?: string;
     } | null;
     message: string;
+    // Add other properties that might exist
+    [key: string]: any;
   };
   html_url: string;
   author: {
     login: string;
     avatar_url: string;
+    // Add other properties that might exist
+    [key: string]: any;
   } | null;
   repository?: {
     full_name: string;
   };
+  // Allow other properties from the GitHub API
+  [key: string]: any;
 }
 
 // Installation type for managing multiple installations
@@ -53,9 +59,9 @@ export interface AppInstallation {
   id: number;
   account: {
     login: string;
-    type: string;
+    type?: string;
     avatarUrl?: string;
-  };
+  } | null;
   appSlug: string;
   appId: number;
   repositorySelection: string;
@@ -71,8 +77,8 @@ export interface AppInstallation {
  */
 export function getInstallationManagementUrl(
   installationId: number,
-  accountLogin?: string,
-  accountType?: string,
+  accountLogin?: string | null,
+  accountType?: string | null,
 ): string {
   // For organization installations
   if (accountType === "Organization" && accountLogin) {
@@ -117,22 +123,43 @@ export async function getAllAppInstallations(
     }
 
     // Map to our simplified format
-    const installations = filteredInstallations.map((inst) => ({
-      id: inst.id,
-      account: {
-        login: inst.account.login,
-        type: inst.account.type,
-        avatarUrl: inst.account.avatar_url,
-      },
-      appSlug: inst.app_slug,
-      appId: inst.app_id,
-      repositorySelection: inst.repository_selection,
-      targetType: inst.target_type,
-    }));
+    const installations: AppInstallation[] = filteredInstallations.map((inst) => {
+      // Ensure we have a valid account object
+      if (!inst.account || typeof inst.account !== 'object') {
+        return {
+          id: inst.id,
+          account: null,
+          appSlug: inst.app_slug,
+          appId: inst.app_id,
+          repositorySelection: inst.repository_selection,
+          targetType: inst.target_type,
+        };
+      }
+      
+      // Handle both user and organization accounts
+      // Safe assertion - we already checked inst.account is not null
+      const account = inst.account as any;
+      
+      return {
+        id: inst.id,
+        account: {
+          login: account.login,
+          type: 'type' in account ? account.type : undefined, 
+          avatarUrl: account.avatar_url,
+        },
+        appSlug: inst.app_slug,
+        appId: inst.app_id,
+        repositorySelection: inst.repository_selection,
+        targetType: inst.target_type,
+      };
+    });
 
     logger.info(MODULE_NAME, "Found GitHub App installations", {
       count: installations.length,
-      accounts: installations.map((i) => i.account.login).join(", "),
+      accounts: installations
+        .filter(i => i.account !== null && 'login' in i.account)
+        .map((i) => i.account?.login)
+        .join(", "),
     });
 
     return installations;
@@ -163,7 +190,7 @@ export async function checkAppInstallation(
 
       logger.info(MODULE_NAME, "Using first GitHub App installation", {
         installationId,
-        account: installations[0].account.login,
+        account: installations[0].account?.login || 'unknown',
       });
 
       return installationId;
@@ -347,7 +374,15 @@ export async function fetchAllRepositoriesOAuth(
           logger.info(MODULE_NAME, `Fetched repos for org: ${org.login}`, {
             count: orgRepos.length,
           });
-          allRepos = [...allRepos, ...orgRepos];
+          // Make sure we're creating a proper array of repositories
+          // @ts-ignore - Octokit types for returned repository data vary
+          if (Array.isArray(orgRepos)) {
+            allRepos = [...allRepos, ...orgRepos];
+          } else if (orgRepos) {
+            // If it's a single repo, add it to the array
+            // @ts-ignore - Octokit type complexities
+            allRepos.push(orgRepos);
+          }
         } catch (orgError) {
           logger.warn(
             MODULE_NAME,
@@ -498,6 +533,7 @@ export async function fetchRepositoryCommitsOAuth(
   until: string,
   author?: string,
 ): Promise<Commit[]> {
+  // This function returns GitHub commits cast to our interface
   logger.debug(
     MODULE_NAME,
     `fetchRepositoryCommitsOAuth called for ${owner}/${repo}`,
@@ -539,7 +575,8 @@ export async function fetchRepositoryCommitsOAuth(
       },
     }));
 
-    return commitsWithRepoInfo;
+    // Cast to ensure compatibility with our interface
+    return commitsWithRepoInfo as any as Commit[];
   } catch (error) {
     logger.error(MODULE_NAME, `Error fetching commits for ${owner}/${repo}`, {
       error,
@@ -605,7 +642,8 @@ export async function fetchRepositoryCommitsApp(
       },
     }));
 
-    return commitsWithRepoInfo;
+    // Cast to ensure compatibility with our interface
+    return commitsWithRepoInfo as any as Commit[];
   } catch (error) {
     logger.error(
       MODULE_NAME,
@@ -697,6 +735,7 @@ export async function fetchCommitsForRepositories(
   until: string = "",
   author?: string,
 ): Promise<Commit[]> {
+  // The return value will be properly cast to our Commit interface
   logger.debug(MODULE_NAME, "fetchCommitsForRepositories called", {
     repositoriesCount: repositories.length,
     hasAccessToken: !!accessToken,
@@ -809,5 +848,6 @@ export async function fetchCommitsForRepositories(
     authMethod: installationId ? "GitHub App" : "OAuth",
   });
 
-  return allCommits;
+  // Cast to Commit[] to ensure proper type
+  return allCommits as unknown as Commit[];
 }

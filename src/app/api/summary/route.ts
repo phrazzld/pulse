@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
       allInstallations = await getAllAppInstallations(session.accessToken);
       logger.info(MODULE_NAME, "Retrieved all GitHub App installations", {
         count: allInstallations.length,
-        accounts: allInstallations.map(i => i.account.login)
+        accounts: allInstallations.filter(i => i.account).map(i => i.account?.login)
       });
       
       // If we don't have any installation IDs yet, use the first available installation
@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
         installationIds = [allInstallations[0].id];
         logger.info(MODULE_NAME, "Using first available installation", {
           installationId: allInstallations[0].id,
-          account: allInstallations[0].account.login
+          account: allInstallations[0].account?.login || 'unknown'
         });
       }
       
@@ -176,14 +176,13 @@ export async function GET(request: NextRequest) {
   const repositoriesParam = searchParams.get("repositories");
   const repositoryFilters = repositoriesParam ? repositoriesParam.split(",") : [];
   
-  // Grouping parameter
+  // Always use chronological view as we've standardized on it
+  // But maintain backward compatibility by still accepting the parameter
   const groupByParam = searchParams.get("groupBy") as GroupBy;
-  const groupBy: GroupBy = ['contributor', 'organization', 'repository', 'chronological'].includes(groupByParam) 
-    ? groupByParam 
-    : 'chronological';
+  const groupBy: GroupBy = 'chronological';
   
-  // Check if we should generate summaries for each group
-  const generateGroupSummaries = searchParams.get("generateGroupSummaries") === 'true';
+  // No longer need group summaries as we only use chronological view
+  const generateGroupSummaries = false;
   
   logger.debug(MODULE_NAME, "Parsed query parameters", {
     since,
@@ -334,7 +333,7 @@ export async function GET(request: NextRequest) {
         // Find an installation for this org if we don't already have one mapped
         if (!orgToInstallationMap.has(orgName)) {
           const matchingInstallation = allInstallations.find(
-            inst => inst.account.login === orgName && installationIds.includes(inst.id)
+            inst => inst.account?.login === orgName && installationIds.includes(inst.id)
           );
           
           if (matchingInstallation) {
@@ -447,138 +446,24 @@ export async function GET(request: NextRequest) {
       });
     }
     
-    // Group the commits based on the groupBy parameter
-    let groupedResults: GroupedResult[] = [];
+    // Always use chronological view (no grouping)
+    // Simplified grouping for chronological view only
+    let groupedResults: GroupedResult[] = [{
+      groupKey: 'all',
+      groupName: 'All Commits',
+      commitCount: filteredCommits.length,
+      repositories: [...new Set(filteredCommits.map(c => c.repository?.full_name || ''))],
+      dates: [...new Set(filteredCommits.map(c => c.commit.author?.date?.split('T')[0] || ''))],
+      commits: filteredCommits,
+      // AI summary will be added later
+    }];
     
-    if (groupBy === 'contributor') {
-      // Group by contributor (author)
-      const contributorGroups = new Map<string, Commit[]>();
-      
-      filteredCommits.forEach(commit => {
-        const authorLogin = commit.author?.login || 'unknown';
-        const authorName = commit.commit.author?.name || authorLogin;
-        const key = authorLogin;
-        
-        if (!contributorGroups.has(key)) {
-          contributorGroups.set(key, []);
-        }
-        
-        contributorGroups.get(key)?.push(commit);
-      });
-      
-      // Convert map to array of groups
-      for (const [authorLogin, authorCommits] of contributorGroups.entries()) {
-        const firstCommit = authorCommits[0];
-        const authorName = firstCommit.commit.author?.name || authorLogin;
-        const authorAvatar = firstCommit.author?.avatar_url;
-        
-        groupedResults.push({
-          groupKey: authorLogin,
-          groupName: authorName,
-          groupAvatar: authorAvatar,
-          commitCount: authorCommits.length,
-          repositories: [...new Set(authorCommits.map(c => c.repository?.full_name || ''))],
-          dates: [...new Set(authorCommits.map(c => c.commit.author.date.split('T')[0]))],
-          commits: authorCommits,
-          // AI summary will be added later if requested
-        });
-      }
-      
-      // Sort by commit count descending
-      groupedResults.sort((a, b) => b.commitCount - a.commitCount);
-      
-    } else if (groupBy === 'organization') {
-      // Group by organization
-      const orgGroups = new Map<string, Commit[]>();
-      
-      filteredCommits.forEach(commit => {
-        const repoFullName = commit.repository?.full_name || '';
-        const orgName = repoFullName.split('/')[0];
-        
-        if (!orgGroups.has(orgName)) {
-          orgGroups.set(orgName, []);
-        }
-        
-        orgGroups.get(orgName)?.push(commit);
-      });
-      
-      // Convert map to array of groups
-      for (const [orgName, orgCommits] of orgGroups.entries()) {
-        // Find an installation that matches this org for avatar
-        const matchingInstallation = allInstallations.find(
-          inst => inst.account.login === orgName
-        );
-        
-        groupedResults.push({
-          groupKey: orgName,
-          groupName: orgName,
-          groupAvatar: matchingInstallation?.account.avatarUrl,
-          commitCount: orgCommits.length,
-          repositories: [...new Set(orgCommits.map(c => c.repository?.full_name || ''))],
-          dates: [...new Set(orgCommits.map(c => c.commit.author.date.split('T')[0]))],
-          commits: orgCommits,
-          // AI summary will be added later if requested
-        });
-      }
-      
-      // Sort by commit count descending
-      groupedResults.sort((a, b) => b.commitCount - a.commitCount);
-      
-    } else if (groupBy === 'repository') {
-      // Group by repository
-      const repoGroups = new Map<string, Commit[]>();
-      
-      filteredCommits.forEach(commit => {
-        const repoFullName = commit.repository?.full_name || '';
-        
-        if (!repoGroups.has(repoFullName)) {
-          repoGroups.set(repoFullName, []);
-        }
-        
-        repoGroups.get(repoFullName)?.push(commit);
-      });
-      
-      // Convert map to array of groups
-      for (const [repoName, repoCommits] of repoGroups.entries()) {
-        // Find the repo details from our fetched list
-        const repoDetails = allRepos.find(repo => repo.full_name === repoName);
-        
-        groupedResults.push({
-          groupKey: repoName,
-          groupName: repoName,
-          commitCount: repoCommits.length,
-          repositories: [repoName],
-          dates: [...new Set(repoCommits.map(c => c.commit.author.date.split('T')[0]))],
-          commits: repoCommits,
-          // AI summary will be added later if requested
-        });
-      }
-      
-      // Sort by commit count descending
-      groupedResults.sort((a, b) => b.commitCount - a.commitCount);
-      
-    } else {
-      // Default: chronological (no grouping)
-      // Just put all commits in a single group
-      groupedResults = [{
-        groupKey: 'all',
-        groupName: 'All Commits',
-        commitCount: filteredCommits.length,
-        repositories: [...new Set(filteredCommits.map(c => c.repository?.full_name || ''))],
-        dates: [...new Set(filteredCommits.map(c => c.commit.author.date.split('T')[0]))],
-        commits: filteredCommits,
-        // AI summary will be added later
-      }];
-    }
-    
-    // Generate AI summaries for overall and for each group if requested
-    logger.debug(MODULE_NAME, "Generating AI summaries", {
-      generateOverallSummary: true,
-      generateGroupSummaries,
-      groupCount: groupedResults.length
+    // Generate overall AI summary only (no group summaries since we only use chronological view)
+    logger.debug(MODULE_NAME, "Generating AI summary", {
+      generateOverallSummary: true
     });
     
-    // Generate overall summary first
+    // Generate overall summary
     const aiSummaryStartTime = Date.now();
     let overallSummary = null;
     
@@ -586,52 +471,8 @@ export async function GET(request: NextRequest) {
       overallSummary = await generateCommitSummary(filteredCommits, geminiApiKey);
       logger.info(MODULE_NAME, "Generated overall AI summary", {
         timeMs: Date.now() - aiSummaryStartTime,
-        keyThemes: overallSummary.keyThemes.length,
-        technicalAreas: overallSummary.technicalAreas.length
-      });
-    }
-    
-    // Generate group summaries if requested
-    if (generateGroupSummaries && groupedResults.length > 1) {
-      // Generate summaries for up to 5 largest groups to avoid excessive API calls
-      const groupsToSummarize = groupedResults
-        .filter(group => group.commitCount >= 5) // Only summarize groups with enough commits
-        .slice(0, 5); // Limit to 5 groups
-      
-      logger.debug(MODULE_NAME, "Generating group summaries", {
-        eligibleGroups: groupsToSummarize.length,
-        totalGroups: groupedResults.length
-      });
-      
-      // Generate summaries in parallel
-      const summaryPromises = groupsToSummarize.map(async group => {
-        if (group.commits.length > 0) {
-          try {
-            const groupSummary = await generateCommitSummary(group.commits, geminiApiKey);
-            return { groupKey: group.groupKey, summary: groupSummary };
-          } catch (error) {
-            logger.warn(MODULE_NAME, `Error generating summary for group ${group.groupKey}`, { error });
-            return { groupKey: group.groupKey, summary: null };
-          }
-        }
-        return { groupKey: group.groupKey, summary: null };
-      });
-      
-      const groupSummaries = await Promise.all(summaryPromises);
-      
-      // Assign summaries to the correct groups
-      groupSummaries.forEach(result => {
-        if (result.summary) {
-          const group = groupedResults.find(g => g.groupKey === result.groupKey);
-          if (group) {
-            group.aiSummary = result.summary;
-          }
-        }
-      });
-      
-      logger.info(MODULE_NAME, "Generated group summaries", {
-        completedSummaries: groupSummaries.filter(s => s.summary).length,
-        totalAttempted: groupsToSummarize.length
+        keyThemes: overallSummary?.keyThemes?.length || 0,
+        technicalAreas: overallSummary?.technicalAreas?.length || 0
       });
     }
     
@@ -658,8 +499,7 @@ export async function GET(request: NextRequest) {
         contributors: contributors.length > 0 ? contributors : null,
         organizations: organizations.length > 0 ? organizations : null,
         repositories: repositoryFilters.length > 0 ? repositoryFilters : null,
-        dateRange: { since, until },
-        groupBy
+        dateRange: { since, until }
       },
       groupedResults,
       // Authentication and installation info
@@ -677,11 +517,15 @@ export async function GET(request: NextRequest) {
     });
     
     // Check what kind of error we have
-    const isAuthError = error?.name === 'HttpError' && 
-                        (error?.message?.includes('credentials') || 
-                        error?.message?.includes('authentication'));
+    const errorObj = error as { name?: string; message?: string } || {};
+    const errorName = errorObj.name || '';
+    const errorMsg = errorObj.message || '';
     
-    const isAppError = error?.message?.includes('GitHub App credentials not configured');
+    const isAuthError = errorName === 'HttpError' && 
+                        (errorMsg.includes('credentials') || 
+                        errorMsg.includes('authentication'));
+    
+    const isAppError = errorMsg.includes('GitHub App credentials not configured');
     
     let errorMessage = "Failed to generate summary";
     let errorCode = "API_ERROR";
@@ -714,7 +558,7 @@ function generateBasicStats(commits: Commit[]) {
   const stats = {
     totalCommits: commits.length,
     repositories: [...new Set(commits.map((commit) => commit.repository?.full_name || commit.html_url.split('/').slice(3, 5).join('/')))],
-    dates: [...new Set(commits.map((commit) => commit.commit.author.date.split('T')[0]))],
+    dates: [...new Set(commits.map((commit) => commit.commit.author?.date?.split('T')[0] || ''))],
   };
   
   logger.debug(MODULE_NAME, "Basic stats generated", {

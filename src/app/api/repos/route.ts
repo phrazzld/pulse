@@ -1,15 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
-import { fetchAllRepositories, checkAppInstallation, getAllAppInstallations, AppInstallation } from "@/lib/github";
+import { fetchAllRepositories, checkAppInstallation, getAllAppInstallations, AppInstallation, Repository } from "@/lib/github";
 import { logger } from "@/lib/logger";
+import { generateETag, isCacheValid, notModifiedResponse, cachedJsonResponse, CacheTTL, generateCacheControl } from "@/lib/cache";
 
 const MODULE_NAME = "api:repos";
+
+// Define a type for the optimized repository metadata
+type OptimizedRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  owner: {
+    login: string;
+  };
+  private: boolean;
+  language: string | null;
+};
+
+// Function to extract only the necessary repository fields
+function optimizeRepositoryData(repo: Repository): OptimizedRepository {
+  return {
+    id: repo.id,
+    name: repo.name,
+    full_name: repo.full_name,
+    owner: {
+      login: repo.owner.login
+    },
+    private: repo.private,
+    language: repo.language || null
+  };
+}
 
 export async function GET(request: NextRequest) {
   logger.debug(MODULE_NAME, "GET /api/repos request received", { 
     url: request.url,
-    headers: Object.fromEntries(request.headers)
+    headers: Object.fromEntries([...request.headers.entries()])
   });
   
   const session = await getServerSession(authOptions);
@@ -31,6 +58,25 @@ export async function GET(request: NextRequest) {
   let requestedInstallationId = request.nextUrl.searchParams.get('installation_id');
   let installationId = requestedInstallationId ? parseInt(requestedInstallationId, 10) : session.installationId;
   
+  // Create a cache key for this request based on user ID and installation ID
+  const cacheKey = `repos:${session.user?.email || 'unknown'}:${installationId || 'oauth'}`;
+  const etagInput = {
+    user: session.user?.email || 'unknown',
+    installationId: installationId || 'oauth',
+    timestamp: Math.floor(Date.now() / CacheTTL.LONG * 1000) // Cache busts every 1 hour
+  };
+  const etag = generateETag(etagInput);
+  
+  // Check if client has a valid cached response
+  if (isCacheValid(request, etag)) {
+    logger.info(MODULE_NAME, "Returning 304 Not Modified - client has current data", {
+      cacheKey,
+      etag
+    });
+    
+    return notModifiedResponse(etag, generateCacheControl(CacheTTL.LONG, CacheTTL.LONG * 2));
+  }
+  
   // Get all available installations if we have an access token
   let allInstallations: AppInstallation[] = [];
   if (session.accessToken) {
@@ -38,7 +84,7 @@ export async function GET(request: NextRequest) {
       allInstallations = await getAllAppInstallations(session.accessToken);
       logger.info(MODULE_NAME, "Retrieved all GitHub App installations", {
         count: allInstallations.length,
-        accounts: allInstallations.map(i => i.account.login)
+        accounts: allInstallations.filter(i => i.account).map(i => i.account?.login)
       });
       
       // If we don't have an installation ID yet, use the first available installation
@@ -46,7 +92,7 @@ export async function GET(request: NextRequest) {
         installationId = allInstallations[0].id;
         logger.info(MODULE_NAME, "Using first available installation", {
           installationId,
-          account: allInstallations[0].account.login
+          account: allInstallations[0].account?.login || 'unknown'
         });
       }
       
@@ -89,16 +135,11 @@ export async function GET(request: NextRequest) {
       hasInstallationId: !!installationId
     });
     
-    return new NextResponse(JSON.stringify({ 
+    return cachedJsonResponse({ 
       error: "GitHub authentication required",
       needsInstallation: true,
       message: "Please install the GitHub App to access your repositories."
-    }), {
-      status: 403,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    }, 403);
   }
   
   logger.info(MODULE_NAME, "Authenticated user requesting repositories", { 
@@ -122,7 +163,10 @@ export async function GET(request: NextRequest) {
     }
     
     // Get all repositories the user has access to (owned, org, and collaborative)
-    const repositories = await fetchAllRepositories(session.accessToken, installationId);
+    const rawRepositories = await fetchAllRepositories(session.accessToken, installationId);
+    
+    // Optimize the repository data by extracting only necessary fields
+    const repositories = rawRepositories.map(optimizeRepositoryData);
     
     const endTime = Date.now();
     
@@ -165,7 +209,8 @@ export async function GET(request: NextRequest) {
       organizationDetails: orgStats
     });
 
-    return NextResponse.json({
+    // Create response object
+    const responseData = {
       repositories,
       authMethod: installationId ? "github_app" : "oauth",
       installationId: installationId || null,
@@ -175,16 +220,28 @@ export async function GET(request: NextRequest) {
       currentInstallations: installationId 
         ? allInstallations.filter(i => i.id === installationId) 
         : []
+    };
+
+    // Return cached JSON response with appropriate headers
+    return cachedJsonResponse(responseData, 200, {
+      etag,
+      maxAge: CacheTTL.LONG, // Cache for 1 hour
+      staleWhileRevalidate: CacheTTL.LONG * 2 // Allow stale content for 2 hours while revalidating
     });
+    
   } catch (error) {
     logger.error(MODULE_NAME, "Error fetching repositories", { error });
     // Check what kind of error we have
-    const isAuthError = error?.name === 'HttpError' && 
-                       (error?.message?.includes('credentials') || 
-                        error?.message?.includes('authentication'));
+    const errorObj = error as { name?: string; message?: string } || {};
+    const errorName = errorObj.name || '';
+    const errorMsg = errorObj.message || '';
     
-    const isScopeError = error?.message?.includes('missing') && error?.message?.includes('scope');
-    const isAppError = error?.message?.includes('GitHub App credentials not configured');
+    const isAuthError = errorName === 'HttpError' && 
+                       (errorMsg.includes('credentials') || 
+                        errorMsg.includes('authentication'));
+    
+    const isScopeError = errorMsg.includes('missing') && errorMsg.includes('scope');
+    const isAppError = errorMsg.includes('GitHub App credentials not configured');
     
     // GitHub tokens can become invalid for various reasons:
     // 1. Token was revoked by the user
@@ -209,16 +266,11 @@ export async function GET(request: NextRequest) {
       errorCode = "GITHUB_AUTH_ERROR";
     }
     
-    return new NextResponse(JSON.stringify({ 
+    // Use 403 for auth errors rather than 401 to prevent automatic browser redirects
+    return cachedJsonResponse({ 
       error: errorMessage,
-      details: error.message,
+      details: errorMsg,
       code: errorCode
-    }), {
-      // Use 403 for auth errors rather than 401 to prevent automatic browser redirects
-      status: (isAuthError || isScopeError || isAppError) ? 403 : 500,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    }, (isAuthError || isScopeError || isAppError) ? 403 : 500);
   }
 }

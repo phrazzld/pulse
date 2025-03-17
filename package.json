@@ -20,13 +20,15 @@
     "next-auth": "^4.24.11",
     "octokit": "^4.1.2",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-window": "^1.8.11"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/react-window": "^1.8.8",
     "eslint": "^9.22.0",
     "eslint-config-next": "^15.2.2",
     "tailwindcss": "^4",
