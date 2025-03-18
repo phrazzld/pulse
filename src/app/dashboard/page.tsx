@@ -9,6 +9,7 @@ import DateRangePicker, { DateRange } from '@/components/DateRangePicker';
 import OrganizationPicker from '@/components/OrganizationPicker';
 import AccountSelector from '@/components/AccountSelector';
 import ActivityFeed from '@/components/ActivityFeed';
+import DashboardLoadingState from '@/components/DashboardLoadingState';
 import { getInstallationManagementUrl } from '@/lib/github';
 import { createActivityFetcher } from '@/lib/activity';
 import { 
@@ -136,6 +137,7 @@ export default function Dashboard() {
   
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
   const [dateRange, setDateRange] = useState({
     since: getLastWeekDate(),
     until: getTodayDate(),
@@ -429,12 +431,7 @@ export default function Dashboard() {
     };
   }, [session, fetchRepositories, activeFilters.organizations, setActiveFilters, shouldRefreshRepositories]);
   
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (status === 'unauthenticated') {
-      router.push('/');
-    }
-  }, [status, router]);
+  // No need for redirect here - the layout handles authentication protection
 
   // Fetch repositories when session is available and check for installation cookie
   useEffect(() => {
@@ -605,47 +602,16 @@ export default function Dashboard() {
     }
   }
 
-  if (status === 'loading') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center" style={{ background: 'var(--gradient-bg)' }}>
-        <div className="flex flex-col items-center max-w-md w-full p-8 rounded-lg border" style={{ 
-          backgroundColor: 'rgba(27, 43, 52, 0.7)',
-          backdropFilter: 'blur(5px)',
-          borderColor: 'var(--neon-green)',
-          boxShadow: '0 0 20px rgba(0, 255, 135, 0.2)'
-        }}>
-          <div className="w-16 h-16 border-4 border-t-transparent rounded-full animate-spin mb-6" style={{ 
-            borderColor: 'var(--neon-green)', 
-            borderTopColor: 'transparent' 
-          }}></div>
-          
-          <div className="space-y-3 w-full">
-            <div className="flex items-center justify-between">
-              <span style={{ color: 'var(--neon-green)' }}>SYSTEM STARTUP</span>
-              <span className="text-xs px-2 py-1 rounded-sm" style={{ 
-                backgroundColor: 'rgba(59, 142, 234, 0.2)',
-                color: 'var(--electric-blue)'
-              }}>
-                INITIALIZING
-              </span>
-            </div>
-            
-            <div className="w-full bg-black bg-opacity-30 h-2 rounded-full overflow-hidden">
-              <div className="h-full animate-pulse" style={{ backgroundColor: 'var(--neon-green)', width: '60%' }}></div>
-            </div>
-            
-            <div className="text-xs" style={{ color: 'var(--foreground)' }}>
-              <div className="mb-1">{`> Loading session data...`}</div>
-              <div className="mb-1">{`> Establishing secure connection...`}</div>
-              <div className="mb-1">{`> Authenticating GitHub credentials...`}</div>
-              <div className="animate-pulse" style={{ color: 'var(--electric-blue)' }}>
-                {`> Preparing dashboard interface...`}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  // Update initialLoad status after first fetch completes
+  useEffect(() => {
+    if (!loading && repositories.length > 0 && initialLoad) {
+      setInitialLoad(false);
+    }
+  }, [loading, repositories, initialLoad]);
+
+  // Show loading state during initial session loading or first data fetch
+  if (status === 'loading' || initialLoad) {
+    return <DashboardLoadingState />;
   }
 
   return (

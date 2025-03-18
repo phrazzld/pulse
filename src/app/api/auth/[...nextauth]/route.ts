@@ -21,8 +21,14 @@ const MODULE_NAME = "api:auth";
 
 // A helper function to generate consistent callback URL
 function getCallbackUrl() {
-  const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
-  return `${baseUrl}/api/auth/callback/github`;
+  // Use the actual requested host if NEXTAUTH_URL is not set
+  // This ensures the callback works on any port during local development
+  const baseUrl = process.env.NEXTAUTH_URL || '';
+  if (baseUrl) {
+    return `${baseUrl}/api/auth/callback/github`;
+  }
+  // Return undefined to let NextAuth automatically determine the callback URL
+  return undefined;
 }
 
 // Check and handle GitHub App installation flow
@@ -46,8 +52,11 @@ export const authOptions: NextAuthOptions = {
         },
         url: "https://github.com/login/oauth/authorize",
       },
-      // @ts-ignore - callbackUrl is not in the type but it works
-      callbackUrl: getCallbackUrl(),
+      // Only set callback URL if explicitly defined
+      ...(getCallbackUrl() ? { 
+        // @ts-ignore - callbackUrl is not in the type but it works
+        callbackUrl: getCallbackUrl() 
+      } : {})
     }),
   ],
   callbacks: {
