@@ -76,7 +76,7 @@ export async function validateAuthState(
       logger.info(MODULE_NAME, "Forcing sign out due to missing access token");
       await signOut({ 
         redirect: true, 
-        callbackUrl: typeof window !== 'undefined' ? window.location.origin + '/' : '/'
+        callbackUrl: '/'
       });
     }
     
@@ -91,7 +91,7 @@ export async function validateAuthState(
     logger.info(MODULE_NAME, "Forcing sign out due to invalid GitHub token");
     await signOut({ 
       redirect: true, 
-      callbackUrl: typeof window !== 'undefined' ? window.location.origin + '/' : '/'
+      callbackUrl: '/'
     });
   }
   

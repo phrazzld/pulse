@@ -21,13 +21,14 @@ const MODULE_NAME = "api:auth";
 
 // A helper function to generate consistent callback URL
 function getCallbackUrl() {
-  // Use the actual requested host if NEXTAUTH_URL is not set
-  // This ensures the callback works on any port during local development
-  const baseUrl = process.env.NEXTAUTH_URL || '';
+  // In production, use NEXTAUTH_URL if available
+  const baseUrl = process.env.NEXTAUTH_URL;
   if (baseUrl) {
     return `${baseUrl}/api/auth/callback/github`;
   }
-  // Return undefined to let NextAuth automatically determine the callback URL
+  
+  // For development, let NextAuth handle the callback URL automatically
+  // It will use the Host header from the request which includes the correct port
   return undefined;
 }
 

@@ -36,7 +36,7 @@ export function AuthValidator({ children, fallback }: AuthValidatorProps) {
         if (!accessToken) {
           console.error('No GitHub token found in session, signing out');
           setIsValid(false);
-          await signOut({ redirect: true, callbackUrl: window.location.origin + '/' });
+          await signOut({ redirect: true, callbackUrl: '/' });
           return;
         }
         
@@ -44,7 +44,7 @@ export function AuthValidator({ children, fallback }: AuthValidatorProps) {
         
         if (!isValid) {
           console.error('GitHub token is invalid or expired, signing out');
-          await signOut({ redirect: true, callbackUrl: window.location.origin + '/' });
+          await signOut({ redirect: true, callbackUrl: '/' });
         } else {
           console.log('GitHub token is valid');
           setIsValid(true);

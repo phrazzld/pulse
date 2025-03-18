@@ -93,7 +93,7 @@ export default function Home() {
 
         {/* Command Button */}
         <button
-          onClick={() => signIn('github', { callbackUrl: window.location.origin + '/dashboard' })}
+          onClick={() => signIn('github', { callbackUrl: '/dashboard' })}
           disabled={status === 'loading'}
           className="w-full flex items-center justify-center py-3 px-4 rounded-md transition-all duration-200"
           style={{ 
