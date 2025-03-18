@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "../auth/[...nextauth]/route";
 import { fetchAllRepositories, checkAppInstallation, getAllAppInstallations, AppInstallation, Repository } from "@/lib/github";
 import { logger } from "@/lib/logger";
 import { generateETag, isCacheValid, notModifiedResponse, cachedJsonResponse, CacheTTL, generateCacheControl } from "@/lib/cache";
+import { withAuthValidation } from "@/lib/auth/apiAuth";
 
 const MODULE_NAME = "api:repos";
 
@@ -33,26 +32,11 @@ function optimizeRepositoryData(repo: Repository): OptimizedRepository {
   };
 }
 
-export async function GET(request: NextRequest) {
+async function handleGetRepositories(request: NextRequest, session: any) {
   logger.debug(MODULE_NAME, "GET /api/repos request received", { 
     url: request.url,
     headers: Object.fromEntries([...request.headers.entries()])
   });
-  
-  const session = await getServerSession(authOptions);
-  
-  if (!session) {
-    logger.warn(MODULE_NAME, "Unauthorized request - no valid session", { 
-      sessionExists: !!session
-    });
-    
-    return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-  }
   
   // Get installation ID from query parameter if present
   let requestedInstallationId = request.nextUrl.searchParams.get('installation_id');
@@ -270,7 +254,11 @@ export async function GET(request: NextRequest) {
     return cachedJsonResponse({ 
       error: errorMessage,
       details: errorMsg,
-      code: errorCode
+      code: errorCode,
+      signOutRequired: isAuthError || isScopeError
     }, (isAuthError || isScopeError || isAppError) ? 403 : 500);
   }
 }
+
+// Export the authenticated handler
+export const GET = withAuthValidation(handleGetRepositories);

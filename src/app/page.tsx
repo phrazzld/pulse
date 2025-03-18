@@ -1,19 +1,25 @@
 'use client';
 
-import { signIn, useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 import Image from "next/image";
-import { useEffect } from "react";
+import useProtectedRoute from "@/hooks/useProtectedRoute";
+import AuthLoadingScreen from "@/components/AuthLoadingScreen";
 
 export default function Home() {
-  const { data: session, status } = useSession();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (session) {
-      router.push('/dashboard');
-    }
-  }, [session, router]);
+  // Use the protected route hook in reverse - redirect to dashboard if authenticated
+  const { isLoading, status } = useProtectedRoute({
+    redirectTo: '/dashboard',
+    redirectIfFound: true,
+    loadingDelay: 250
+  });
+  
+  // Show loading screen when we're redirecting to dashboard
+  if (isLoading && status === 'authenticated') {
+    return <AuthLoadingScreen 
+      message="Authenticated" 
+      subMessage="Redirecting to your dashboard..."
+    />;
+  }
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4" style={{ background: 'var(--gradient-bg)' }}>
@@ -68,9 +74,26 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Show appropriate messaging based on auth state */}
+        {status === 'unauthenticated' && (
+          <div className="text-center mb-4">
+            <p className="text-sm" style={{ color: 'var(--neon-green)' }}>
+              Sign in with GitHub to access your repositories and analyze commits.
+            </p>
+          </div>
+        )}
+        
+        {status === 'loading' && (
+          <div className="text-center mb-4">
+            <p className="text-sm" style={{ color: 'var(--electric-blue)' }}>
+              Loading authentication status...
+            </p>
+          </div>
+        )}
+
         {/* Command Button */}
         <button
-          onClick={() => signIn('github')}
+          onClick={() => signIn('github', { callbackUrl: window.location.origin + '/dashboard' })}
           disabled={status === 'loading'}
           className="w-full flex items-center justify-center py-3 px-4 rounded-md transition-all duration-200"
           style={{ 
